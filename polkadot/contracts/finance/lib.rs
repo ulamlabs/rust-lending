@@ -20,12 +20,31 @@ pub mod finance {
         DepositUserOverflow,
         TokenNotSupported,
         TokenDisabled,
+        NothingToWithdraw,
+        NothingToWithdrawForUser,
+        WithdrawTooMuch,
+        WithdrawTooMuchForUser,
         CallerIsNotAdmin,
         #[cfg(any(feature = "std", test, doc))]
         Test(String)
     }
 
     pub struct EnabledToken(AccountId);
+    pub struct WithdrawOnlyToken(AccountId);
+
+    pub trait Token {
+        fn id(&self) -> AccountId;
+    }
+    impl Token for EnabledToken {
+        fn id(&self) -> AccountId {
+            self.0
+        }
+    }
+    impl Token for WithdrawOnlyToken {
+        fn id(&self) -> AccountId {
+            self.0
+        }
+    }
 
     pub struct NewTokenBalance(u128);
     pub struct NewUserBalance(u128);
@@ -69,16 +88,16 @@ pub mod finance {
             }
         }
 
-        fn get_user_balance(&self, token: &EnabledToken, user: &User) -> Option<u128> {
-            self.user_balances.get((token.0, user.0))
+        fn get_user_balance(&self, token: &impl Token, user: &User) -> Option<u128> {
+            self.user_balances.get((token.id(), user.0))
         }
 
-        fn set_user_balance(&mut self, token: &EnabledToken, user: &User, new_user_balance: NewUserBalance) {
-            self.user_balances.insert((token.0, user.0), &new_user_balance.0);
+        fn set_user_balance(&mut self, token: &impl Token, user: &User, new_user_balance: NewUserBalance) {
+            self.user_balances.insert((token.id(), user.0), &new_user_balance.0);
         }
 
-        fn set_token_balance(&mut self, token: &EnabledToken, new_balance: NewTokenBalance) {
-            self.balances.insert(token.0, &new_balance.0);
+        fn set_token_balance(&mut self, token: &impl Token, new_balance: NewTokenBalance) {
+            self.balances.insert(token.id(), &new_balance.0);
         }
 
         fn new_user_balance_after_deposit(&self, token: &EnabledToken, user: &User, amount: u128) -> Result<NewUserBalance, FinanceError> {
@@ -111,6 +130,34 @@ pub mod finance {
             self.tokens.insert(token, &v);
         }
 
+        fn withdraw_only_token(&self, token: AccountId) -> WithdrawOnlyToken {
+            WithdrawOnlyToken(token)
+        }
+
+        fn new_token_balance_after_withdraw(&self, token: &WithdrawOnlyToken, amount: u128) -> Result<NewTokenBalance, FinanceError> {
+            if let Some(balance) = self.balances.get(token.0) {
+                if let Some(new_balance) = balance.checked_sub(amount) {
+                    Ok(NewTokenBalance(new_balance))
+                } else {
+                    Err(FinanceError::WithdrawTooMuch)
+                }
+            } else {
+                Err(FinanceError::NothingToWithdraw)
+            }
+        }
+
+        fn new_user_balance_after_withdraw(&self, token: &WithdrawOnlyToken, user: &User, amount: u128) -> Result<NewUserBalance, FinanceError> {
+            if let Some(user_balance) = self.get_user_balance(token, user) {
+                if let Some(new_user_balance) = user_balance.checked_sub(amount) {
+                    Ok(NewUserBalance(new_user_balance))
+                } else {
+                    Err(FinanceError::WithdrawTooMuchForUser)
+                }
+            } else {
+                Err(FinanceError::NothingToWithdrawForUser)
+            }
+        }
+
 
         #[ink(message)]
         pub fn deposit(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
@@ -121,6 +168,19 @@ pub mod finance {
 
             self.set_user_balance(token, user, new_user_balance);
             self.set_token_balance(token, new_balance);
+
+            Ok(())
+        }
+
+        #[ink(message)]
+        pub fn withdraw(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
+            let user = &self.caller();
+            let token = &self.withdraw_only_token(token);
+            let new_balance = self.new_token_balance_after_withdraw(token, amount)?;
+            let new_user_balance = self.new_user_balance_after_withdraw(token, user, amount)?;
+
+            self.set_token_balance(token, new_balance);
+            self.set_user_balance(token, user, new_user_balance);
 
             Ok(())
         }
@@ -181,39 +241,84 @@ pub mod finance {
             let callers = accounts();
             let admin = callers.alice;
             let user = callers.django;
-            let ETH = callers.eve;
-            let BTC = callers.bob;
+            let eth = callers.eve;
+            let btc = callers.bob;
 
 
             set_caller(admin);
             let mut finance = Finance::new();
             
-            match finance.deposit(BTC, 100) {
+            match finance.deposit(btc, 100) {
                 Err(FinanceError::TokenNotSupported) => Ok(()),
                 _ => e("Deposit should fail if token is not supported"),
             }?;
             
             set_caller(user);
-            match finance.disable(BTC) {
+            match finance.disable(btc) {
                 Err(FinanceError::CallerIsNotAdmin) => Ok(()),
                 _ => e("Disable should fail if caller is not admin"),
             }?;
 
             set_caller(admin);
-            finance.disable(BTC)?;
+            finance.disable(btc)?;
 
-            match finance.deposit(BTC, 100) {
+            match finance.deposit(btc, 100) {
                 Err(FinanceError::TokenDisabled) => Ok(()),
                 _ => e("Deposit should fail if token is disabled"),
             }?;
 
             set_caller(user);
-            match finance.enable(BTC) {
+            match finance.enable(btc) {
                 Err(FinanceError::CallerIsNotAdmin) => Ok(()),
                 _ => e("Enable should fail if caller is not admin"),
             }?;
 
+            set_caller(admin);
+            finance.enable(btc)?;
+
+            set_caller(user);
+            finance.deposit(btc, u128::MAX)?;
+
+            match finance.deposit(btc, 1) {
+                Err(FinanceError::DepositUserOverflow) => Ok(()),
+                _ => e("Deposit should fail if integer overflow occurs, while increasing user balance"),
+            }?;
+
+            set_caller(admin);
+            match finance.deposit(btc, 1) {
+                Err(FinanceError::DepositOverflow) => Ok(()),
+                _ => e("Deposit should fail if integer overflow occurs, while increasing token balance"),
+            }?;
+
+            match finance.withdraw(eth, 0) {
+                Err(FinanceError::NothingToWithdraw) => Ok(()),
+                _ => e("Withdraw should fail if token has no balance"),
+            }?;
+
+            match finance.withdraw(btc, 0) {
+                Err(FinanceError::NothingToWithdrawForUser) => Ok(()),
+                _ => e("Withdraw should fail if user has no balance"),
+            }?;
             
+            set_caller(user);
+            finance.withdraw(btc, u128::MAX)?;
+
+            match finance.withdraw(btc, u128::MAX) {
+                Err(FinanceError::WithdrawTooMuch) => Ok(()),
+                _ => e("Withdraw should fail if token has not enough balance"),
+            }?;
+
+            set_caller(admin);
+            finance.deposit(btc, 1)?;
+            finance.deposit(btc, 0)?;
+
+            set_caller(user);
+            match finance.withdraw(btc, 1) {
+                Err(FinanceError::WithdrawTooMuchForUser) => Ok(()),
+                _ => e("Withdraw should fail if user has not enough balance")
+            }?;
+
+
 
             Ok(())
         }
