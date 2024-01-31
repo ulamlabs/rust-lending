@@ -13,6 +13,8 @@ pub mod finance {
         pub user_balances: Mapping<(AccountId, AccountId), u128>,
         pub invested: Mapping<AccountId, u128>,
         pub user_invested: Mapping<(AccountId, AccountId), u128>,
+        pub borrowed: Mapping<AccountId, u128>,
+        pub user_borrowed: Mapping<(AccountId, AccountId), u128>,
         pub tokens: Mapping<AccountId, bool>,
         pub prices: Mapping<AccountId, (u128, u128)>,
     }
@@ -20,6 +22,12 @@ pub mod finance {
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
     #[derive(Debug, PartialEq, Eq, scale::Encode, scale::Decode)]
     pub enum FinanceError {
+        NothingToRedeem,
+        NothingToRedeemForUser,
+        RedeemTooMuch,
+        RedeemTooMuchForUser,
+        BorrowOverflow,
+        UserBorrowOverflow,
         RedepositTooMuch,
         NothingToRedeposit,
         RedepositTooMuchForUser,
@@ -39,11 +47,12 @@ pub mod finance {
         Test(String)
     }
 
-    pub struct EnabledToken(AccountId);
-    pub struct WithdrawOnlyToken(AccountId);
-    pub struct RedepositOnlyToken(AccountId);
+    struct EnabledToken(AccountId);
+    struct WithdrawOnlyToken(AccountId);
+    struct RedepositOnlyToken(AccountId);
+    struct RedeemOnlyToken(AccountId);
 
-    pub trait Token {
+    trait Token {
         fn id(&self) -> AccountId;
     }
     impl Token for EnabledToken {
@@ -61,23 +70,32 @@ pub mod finance {
             self.0
         }
     }
+    impl Token for RedeemOnlyToken {
+        fn id(&self) -> AccountId {
+            self.0
+        }
+    }
 
-    pub trait DeprecatedToken: Token {}
+    trait DeprecatedToken: Token {}
 
     
     impl DeprecatedToken for RedepositOnlyToken {}
     impl DeprecatedToken for WithdrawOnlyToken {}
-    pub trait ActiveToken: Token {}
+    impl DeprecatedToken for RedeemOnlyToken {}
+    trait ActiveToken: Token {}
     impl ActiveToken for EnabledToken {}
     impl ActiveToken for RedepositOnlyToken {}
 
-    pub struct NewTokenBalance(u128);
-    pub struct NewUserBalance(u128);
+    struct NewTokenBalance(u128);
+    struct NewUserBalance(u128);
 
-    pub struct NewUserInvested(u128);
-    pub struct NewTokenInvested(u128);
-    pub struct User(AccountId);
-    pub struct AdminCaller();
+    struct NewTokenBorrowed(u128);
+    struct NewUserBorrowed(u128);
+
+    struct NewUserInvested(u128);
+    struct NewTokenInvested(u128);
+    struct User(AccountId);
+    struct AdminCaller();
 
     impl Finance {
         /// Creates a new flipper smart contract initialized with the given value.
@@ -91,6 +109,8 @@ pub mod finance {
                 user_balances: Mapping::default(),
                 invested: Mapping::default(),
                 user_invested: Mapping::default(),
+                borrowed: Mapping::default(),
+                user_borrowed: Mapping::default(),
                 tokens: Mapping::default(),
                 prices: Mapping::default(),
             }
@@ -110,6 +130,10 @@ pub mod finance {
 
         fn redeposit_only_token(&self, token: AccountId) -> RedepositOnlyToken {
             RedepositOnlyToken(token)
+        }
+
+        fn redeem_only_token(&self, token: AccountId) -> RedeemOnlyToken {
+            RedeemOnlyToken(token)
         }
 
         fn new_token_balance_after_deposit(&self, token: &impl ActiveToken, amount: u128) -> Result<NewTokenBalance, FinanceError> {
@@ -146,6 +170,18 @@ pub mod finance {
 
         fn set_token_invested(&mut self, token: &impl Token, new_token_invested: NewTokenInvested) {
             self.invested.insert(token.id(), &new_token_invested.0);
+        }
+
+        fn get_user_borrowed(&self, token: &impl Token, user: &User) -> Option<u128> {
+            self.user_borrowed.get((token.id(), user.0))
+        }
+
+        fn set_token_borrowed(&mut self, token: &impl Token, new_borrowed: NewTokenBorrowed) {
+            self.borrowed.insert(token.id(), &new_borrowed.0);
+        }
+
+        fn set_user_borrowed(&mut self, token: &impl Token, user: &User, new_user_borrowed: NewUserBorrowed) {
+            self.user_borrowed.insert((token.id(), user.0), &new_user_borrowed.0);
         }
 
         fn new_user_balance_after_deposit(&self, token: &impl ActiveToken, user: &User, amount: u128) -> Result<NewUserBalance, FinanceError> {
@@ -207,7 +243,7 @@ pub mod finance {
         }
 
 
-        pub fn new_user_invested_after_invest(&self, token: &EnabledToken, user: &User, amount: u128) -> Result<NewUserInvested, FinanceError> {
+        fn new_user_invested_after_invest(&self, token: &EnabledToken, user: &User, amount: u128) -> Result<NewUserInvested, FinanceError> {
             if let Some(user_invested) = self.get_user_invested(token, user) {
                 if let Some(new_user_invested) = user_invested.checked_add(amount) {
                     Ok(NewUserInvested(new_user_invested))
@@ -219,7 +255,7 @@ pub mod finance {
             }
         }
 
-        pub fn new_token_invested_after_invest(&self, token: &EnabledToken, amount: u128) -> Result<NewTokenInvested, FinanceError> {
+        fn new_token_invested_after_invest(&self, token: &EnabledToken, amount: u128) -> Result<NewTokenInvested, FinanceError> {
             if let Some(invested) = self.invested.get(token.id()) {
                 if let Some(new_invested) = invested.checked_add(amount) {
                     Ok(NewTokenInvested(new_invested))
@@ -231,7 +267,7 @@ pub mod finance {
             }
         }
 
-        pub fn new_token_invested_after_redeposit(&self, token: &impl DeprecatedToken, amount: u128) -> Result<NewTokenInvested, FinanceError> {
+        fn new_token_invested_after_redeposit(&self, token: &impl DeprecatedToken, amount: u128) -> Result<NewTokenInvested, FinanceError> {
             if let Some(invested) = self.invested.get(token.id()) {
                 if let Some(new_invested) = invested.checked_sub(amount) {
                     Ok(NewTokenInvested(new_invested))
@@ -243,7 +279,7 @@ pub mod finance {
             }
         }
 
-        pub fn new_user_invested_after_redeposit(&self, token: &impl DeprecatedToken, user: &User, amount: u128) -> Result<NewUserInvested, FinanceError> {
+        fn new_user_invested_after_redeposit(&self, token: &impl DeprecatedToken, user: &User, amount: u128) -> Result<NewUserInvested, FinanceError> {
             if let Some(user_invested) = self.get_user_invested(token, user) {
                 if let Some(new_user_invested) = user_invested.checked_sub(amount) {
                     Ok(NewUserInvested(new_user_invested))
@@ -252,6 +288,54 @@ pub mod finance {
                 }
             } else {
                 Err(FinanceError::NothingToRedepositForUser)
+            }
+        }
+
+        fn new_token_borrowed_after_borrow(&self, token: &impl ActiveToken, amount: u128) -> Result<NewTokenBorrowed, FinanceError> {
+            if let Some(borrowed) = self.borrowed.get(token.id()) {
+                if let Some(new_borrowed) = borrowed.checked_add(amount) {
+                    Ok(NewTokenBorrowed(new_borrowed))
+                } else {
+                    Err(FinanceError::BorrowOverflow)
+                }
+            } else {
+                Ok(NewTokenBorrowed(amount))
+            }
+        }
+
+        fn new_user_borrowed_after_borrow(&self, token: &impl ActiveToken, user: &User, amount: u128) -> Result<NewUserBorrowed, FinanceError> {
+            if let Some(user_borrowed) = self.get_user_borrowed(token, user) {
+                if let Some(new_user_borrowed) = user_borrowed.checked_add(amount) {
+                    Ok(NewUserBorrowed(new_user_borrowed))
+                } else {
+                    Err(FinanceError::UserBorrowOverflow)
+                }
+            } else {
+                Ok(NewUserBorrowed(amount))
+            }
+        }
+
+        fn new_user_borrowed_after_redeem(&self, token: &impl DeprecatedToken, user: &User, amount: u128) -> Result<NewUserBorrowed, FinanceError> {
+            if let Some(user_borrowed) = self.get_user_borrowed(token, user) {
+                if let Some(new_user_borrowed) = user_borrowed.checked_sub(amount) {
+                    Ok(NewUserBorrowed(new_user_borrowed))
+                } else {
+                    Err(FinanceError::RedeemTooMuchForUser)
+                }
+            } else {
+                Err(FinanceError::NothingToRedeemForUser)
+            }
+        }
+
+        fn new_token_borrowed_after_redeem(&self, token: &impl DeprecatedToken, amount: u128) -> Result<NewTokenBorrowed, FinanceError> {
+            if let Some(borrowed) = self.borrowed.get(token.id()) {
+                if let Some(new_borrowed) = borrowed.checked_sub(amount) {
+                    Ok(NewTokenBorrowed(new_borrowed))
+                } else {
+                    Err(FinanceError::RedeemTooMuch)
+                }
+            } else {
+                Err(FinanceError::NothingToRedeem)
             }
         }
 
@@ -311,6 +395,32 @@ pub mod finance {
             self.set_user_balance(token, user, new_user_balance);
             self.set_user_invested(token, user, new_user_invested);
             self.set_token_invested(token, new_invested);
+
+            Ok(())
+        }
+
+        #[ink(message)]
+        pub fn borrow(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
+            let user = &self.caller();
+            let token = &self.enabled_token(token)?;
+            let new_borrowed = self.new_token_borrowed_after_borrow(token, amount)?;
+            let new_user_borrowed = self.new_user_borrowed_after_borrow(token, user, amount)?;
+            
+            self.set_token_borrowed(token, new_borrowed);
+            self.set_user_borrowed(token, user, new_user_borrowed);
+
+            Ok(())
+        }
+
+        #[ink(message)]
+        pub fn redeem(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
+            let user = &self.caller();
+            let token = &self.redeem_only_token(token);
+            let new_borrowed = self.new_token_borrowed_after_redeem(token, amount)?;
+            let new_user_borrowed = self.new_user_borrowed_after_redeem(token, user, amount)?;
+
+            self.set_token_borrowed(token, new_borrowed);
+            self.set_user_borrowed(token, user, new_user_borrowed);
 
             Ok(())
         }
