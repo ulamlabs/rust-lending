@@ -8,14 +8,24 @@ pub mod finance {
     #[ink(storage)]
     pub struct Finance {
         pub admin: AccountId,
+        pub oracle: AccountId,
         pub balances: Mapping<AccountId, u128>,
         pub user_balances: Mapping<(AccountId, AccountId), u128>,
+        pub invested: Mapping<AccountId, u128>,
+        pub user_invested: Mapping<(AccountId, AccountId), u128>,
         pub tokens: Mapping<AccountId, bool>,
+        pub prices: Mapping<AccountId, (u128, u128)>,
     }
 
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
     #[derive(Debug, PartialEq, Eq, scale::Encode, scale::Decode)]
     pub enum FinanceError {
+        RedepositTooMuch,
+        NothingToRedeposit,
+        RedepositTooMuchForUser,
+        NothingToRedepositForUser,
+        InvestOverflow,
+        UserInvestOverflow,
         DepositOverflow,
         DepositUserOverflow,
         TokenNotSupported,
@@ -31,6 +41,7 @@ pub mod finance {
 
     pub struct EnabledToken(AccountId);
     pub struct WithdrawOnlyToken(AccountId);
+    pub struct RedepositOnlyToken(AccountId);
 
     pub trait Token {
         fn id(&self) -> AccountId;
@@ -45,22 +56,43 @@ pub mod finance {
             self.0
         }
     }
+    impl Token for RedepositOnlyToken {
+        fn id(&self) -> AccountId {
+            self.0
+        }
+    }
+
+    pub trait DeprecatedToken: Token {}
+
+    
+    impl DeprecatedToken for RedepositOnlyToken {}
+    impl DeprecatedToken for WithdrawOnlyToken {}
+    pub trait ActiveToken: Token {}
+    impl ActiveToken for EnabledToken {}
+    impl ActiveToken for RedepositOnlyToken {}
 
     pub struct NewTokenBalance(u128);
     pub struct NewUserBalance(u128);
+
+    pub struct NewUserInvested(u128);
+    pub struct NewTokenInvested(u128);
     pub struct User(AccountId);
     pub struct AdminCaller();
 
     impl Finance {
         /// Creates a new flipper smart contract initialized with the given value.
         #[ink(constructor)]
-        pub fn new() -> Self {
+        pub fn new(oracle: AccountId) -> Self {
             let admin = Self::env().caller();
             Finance {
                 admin,
+                oracle,
                 balances: Mapping::default(),
                 user_balances: Mapping::default(),
+                invested: Mapping::default(),
+                user_invested: Mapping::default(),
                 tokens: Mapping::default(),
+                prices: Mapping::default(),
             }
         }
 
@@ -76,8 +108,12 @@ pub mod finance {
             }
         }
 
-        fn new_token_balance_after_deposit(&self, token: &EnabledToken, amount: u128) -> Result<NewTokenBalance, FinanceError> {
-            if let Some(balance) = self.balances.get(token.0) {
+        fn redeposit_only_token(&self, token: AccountId) -> RedepositOnlyToken {
+            RedepositOnlyToken(token)
+        }
+
+        fn new_token_balance_after_deposit(&self, token: &impl ActiveToken, amount: u128) -> Result<NewTokenBalance, FinanceError> {
+            if let Some(balance) = self.balances.get(token.id()) {
                 if let Some(new_balance) = balance.checked_add(amount) {
                     Ok(NewTokenBalance(new_balance))
                 } else {
@@ -92,6 +128,10 @@ pub mod finance {
             self.user_balances.get((token.id(), user.0))
         }
 
+        fn get_user_invested(&self, token: &impl Token, user: &User) -> Option<u128> {
+            self.user_invested.get((token.id(), user.0))
+        }
+
         fn set_user_balance(&mut self, token: &impl Token, user: &User, new_user_balance: NewUserBalance) {
             self.user_balances.insert((token.id(), user.0), &new_user_balance.0);
         }
@@ -100,7 +140,15 @@ pub mod finance {
             self.balances.insert(token.id(), &new_balance.0);
         }
 
-        fn new_user_balance_after_deposit(&self, token: &EnabledToken, user: &User, amount: u128) -> Result<NewUserBalance, FinanceError> {
+        fn set_user_invested(&mut self, token: &impl Token, user: &User, new_user_invested: NewUserInvested) {
+            self.user_invested.insert((token.id(), user.0), &new_user_invested.0);
+        }
+
+        fn set_token_invested(&mut self, token: &impl Token, new_token_invested: NewTokenInvested) {
+            self.invested.insert(token.id(), &new_token_invested.0);
+        }
+
+        fn new_user_balance_after_deposit(&self, token: &impl ActiveToken, user: &User, amount: u128) -> Result<NewUserBalance, FinanceError> {
             if let Some(user_balance) = self.get_user_balance(token, user) {
                 if let Some(new_user_balance) = user_balance.checked_add(amount) {
                     Ok(NewUserBalance(new_user_balance))
@@ -134,8 +182,8 @@ pub mod finance {
             WithdrawOnlyToken(token)
         }
 
-        fn new_token_balance_after_withdraw(&self, token: &WithdrawOnlyToken, amount: u128) -> Result<NewTokenBalance, FinanceError> {
-            if let Some(balance) = self.balances.get(token.0) {
+        fn new_token_balance_after_withdraw(&self, token: &impl Token, amount: u128) -> Result<NewTokenBalance, FinanceError> {
+            if let Some(balance) = self.balances.get(token.id()) {
                 if let Some(new_balance) = balance.checked_sub(amount) {
                     Ok(NewTokenBalance(new_balance))
                 } else {
@@ -146,7 +194,7 @@ pub mod finance {
             }
         }
 
-        fn new_user_balance_after_withdraw(&self, token: &WithdrawOnlyToken, user: &User, amount: u128) -> Result<NewUserBalance, FinanceError> {
+        fn new_user_balance_after_withdraw(&self, token: &impl Token, user: &User, amount: u128) -> Result<NewUserBalance, FinanceError> {
             if let Some(user_balance) = self.get_user_balance(token, user) {
                 if let Some(new_user_balance) = user_balance.checked_sub(amount) {
                     Ok(NewUserBalance(new_user_balance))
@@ -158,6 +206,54 @@ pub mod finance {
             }
         }
 
+
+        pub fn new_user_invested_after_invest(&self, token: &EnabledToken, user: &User, amount: u128) -> Result<NewUserInvested, FinanceError> {
+            if let Some(user_invested) = self.get_user_invested(token, user) {
+                if let Some(new_user_invested) = user_invested.checked_add(amount) {
+                    Ok(NewUserInvested(new_user_invested))
+                } else {
+                    Err(FinanceError::UserInvestOverflow)
+                }
+            } else {
+                Ok(NewUserInvested(amount))
+            }
+        }
+
+        pub fn new_token_invested_after_invest(&self, token: &EnabledToken, amount: u128) -> Result<NewTokenInvested, FinanceError> {
+            if let Some(invested) = self.invested.get(token.id()) {
+                if let Some(new_invested) = invested.checked_add(amount) {
+                    Ok(NewTokenInvested(new_invested))
+                } else {
+                    Err(FinanceError::InvestOverflow)
+                }
+            } else {
+                Ok(NewTokenInvested(amount))
+            }
+        }
+
+        pub fn new_token_invested_after_redeposit(&self, token: &impl DeprecatedToken, amount: u128) -> Result<NewTokenInvested, FinanceError> {
+            if let Some(invested) = self.invested.get(token.id()) {
+                if let Some(new_invested) = invested.checked_sub(amount) {
+                    Ok(NewTokenInvested(new_invested))
+                } else {
+                    Err(FinanceError::RedepositTooMuch)
+                }
+            } else {
+                Err(FinanceError::NothingToRedeposit)
+            }
+        }
+
+        pub fn new_user_invested_after_redeposit(&self, token: &impl DeprecatedToken, user: &User, amount: u128) -> Result<NewUserInvested, FinanceError> {
+            if let Some(user_invested) = self.get_user_invested(token, user) {
+                if let Some(new_user_invested) = user_invested.checked_sub(amount) {
+                    Ok(NewUserInvested(new_user_invested))
+                } else {
+                    Err(FinanceError::RedepositTooMuchForUser)
+                }
+            } else {
+                Err(FinanceError::NothingToRedepositForUser)
+            }
+        }
 
         #[ink(message)]
         pub fn deposit(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
@@ -181,6 +277,40 @@ pub mod finance {
 
             self.set_token_balance(token, new_balance);
             self.set_user_balance(token, user, new_user_balance);
+
+            Ok(())
+        }
+
+        #[ink(message)]
+        pub fn invest(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
+            let user = &self.caller();
+            let token = &self.enabled_token(token)?;
+            let new_user_invested = self.new_user_invested_after_invest(token, user, amount)?;
+            let new_invested = self.new_token_invested_after_invest(token, amount)?;
+            let new_balance = self.new_token_balance_after_withdraw(token, amount)?;
+            let new_user_balance = self.new_user_balance_after_withdraw(token, user, amount)?;
+
+            self.set_token_balance(token, new_balance);
+            self.set_user_balance(token, user, new_user_balance);
+            self.set_user_invested(token, user, new_user_invested);
+            self.set_token_invested(token, new_invested);
+
+            Ok(())
+        }
+
+        #[ink(message)]
+        pub fn redeposit(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
+            let user = &self.caller();
+            let token = &self.redeposit_only_token(token);
+            let new_invested = self.new_token_invested_after_redeposit(token, amount)?;
+            let new_user_invested = self.new_user_invested_after_redeposit(token, user, amount)?;
+            let new_balance = self.new_token_balance_after_deposit(token, amount)?;
+            let new_user_balance = self.new_user_balance_after_deposit(token, user, amount)?;
+
+            self.set_token_balance(token, new_balance);
+            self.set_user_balance(token, user, new_user_balance);
+            self.set_user_invested(token, user, new_user_invested);
+            self.set_token_invested(token, new_invested);
 
             Ok(())
         }
@@ -222,6 +352,8 @@ pub mod finance {
 
     #[cfg(test)]
     mod tests {
+        use core::cmp::Ordering;
+
         use super::*;
 
         fn accounts(
@@ -240,13 +372,14 @@ pub mod finance {
         fn _run() -> Result<(), FinanceError> {
             let callers = accounts();
             let admin = callers.alice;
+            let oracle = callers.frank;
             let user = callers.django;
             let eth = callers.eve;
             let btc = callers.bob;
 
 
             set_caller(admin);
-            let mut finance = Finance::new();
+            let mut finance = Finance::new(oracle);
             
             match finance.deposit(btc, 100) {
                 Err(FinanceError::TokenNotSupported) => Ok(()),
@@ -276,8 +409,18 @@ pub mod finance {
             set_caller(admin);
             finance.enable(btc)?;
 
+            match finance.balance(btc).cmp(&0) {
+                Ordering::Equal => Ok(()),
+                _ => e("Token balance should be 0, before any deposit occurs"),
+            }?;
+
             set_caller(user);
             finance.deposit(btc, u128::MAX)?;
+
+            match finance.balance(btc).cmp(&u128::MAX) {
+                Ordering::Equal => Ok(()),
+                _ => e("Token balance should be MAX, after depositing MAX"),
+            }?;
 
             match finance.deposit(btc, 1) {
                 Err(FinanceError::DepositUserOverflow) => Ok(()),
@@ -317,8 +460,6 @@ pub mod finance {
                 Err(FinanceError::WithdrawTooMuchForUser) => Ok(()),
                 _ => e("Withdraw should fail if user has not enough balance")
             }?;
-
-
 
             Ok(())
         }
