@@ -7,21 +7,59 @@ pub mod finance {
 
     #[ink(storage)]
     pub struct Finance {
-        pub admin: AccountId,
-        pub oracle: AccountId,
-        pub balances: Mapping<AccountId, u128>,
-        pub user_balances: Mapping<(AccountId, AccountId), u128>,
-        pub invested: Mapping<AccountId, u128>,
-        pub user_invested: Mapping<(AccountId, AccountId), u128>,
-        pub borrowed: Mapping<AccountId, u128>,
-        pub user_borrowed: Mapping<(AccountId, AccountId), u128>,
-        pub tokens: Mapping<AccountId, bool>,
-        pub prices: Mapping<AccountId, (u128, u128)>,
+        admin: AccountId,
+        oracle: AccountId,
+        balances: Mapping<AccountId, u128>,
+        user_balances: Mapping<(AccountId, AccountId), u128>,
+        invested: Mapping<AccountId, u128>,
+        user_invested: Mapping<(AccountId, AccountId), u128>,
+        borrowed: Mapping<AccountId, u128>,
+        user_borrowed: Mapping<(AccountId, AccountId), u128>,
+        tokens: Mapping<AccountId, bool>,
+        prices: Mapping<AccountId, u128>,
+        updated_at: u32,
+        user_updated_at: Mapping<AccountId, u32>,
+        prices_updated_at: Mapping<AccountId, u32>,
+
+        user_total_balance: Mapping<AccountId, u128>,
+        user_total_invested: Mapping<AccountId, u128>,
+        user_total_borrowed: Mapping<AccountId, u128>,
+
+        user_unpriced_balance: Mapping<AccountId, u128>,
+        user_unpriced_invested: Mapping<AccountId, u128>,
+        user_unpriced_borrowed: Mapping<AccountId, u128>,
+
+        user_total_balance_value: Mapping<AccountId, u128>,
+        user_total_invested_value: Mapping<AccountId, u128>,
+        user_total_borrowed_value: Mapping<AccountId, u128>,
     }
+
+    struct NewUserUpdatedAt(u32);
+
+    struct NewUserTotalBalance(u128);
+    struct NewUserTotalInvested(u128);
+    struct NewUserTotalBorrowed(u128);
+
+    struct NewUserTotalBalanceValue(u128);
+    struct NewUserTotalInvestedValue(u128);
+    struct NewUserTotalBorrowedValue(u128);
+
+    struct NewUserUnpricedBalance(u128);
+    struct NewUserUnpricedInvested(u128);
+    struct NewUserUnpricedBorrowed(u128);
 
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
     #[derive(Debug, PartialEq, Eq, scale::Encode, scale::Decode)]
     pub enum FinanceError {
+        UnpricedBalanceOverflowImpossible,
+        UnpricedInvestedOverflowImpossible,
+        UnpricedBorrowedOverflowImpossible,
+        UserBalanceValueTooHigh,
+        UserInvestedValueTooHigh,
+        UserBorrowedValueTooHigh,
+        UserTotalBalanceValueTooHigh,
+        UserTotalInvestedValueTooHigh,
+        UserTotalBorrowedValueTooHigh,
         NothingToRedeem,
         NothingToRedeemForUser,
         RedeemTooMuch,
@@ -43,11 +81,13 @@ pub mod finance {
         WithdrawTooMuch,
         WithdrawTooMuchForUser,
         CallerIsNotAdmin,
+        CallerIsNotOracle,
         #[cfg(any(feature = "std", test, doc))]
         Test(String)
     }
 
     struct EnabledToken(AccountId);
+    struct SupportedToken(AccountId);
     struct WithdrawOnlyToken(AccountId);
     struct RedepositOnlyToken(AccountId);
     struct RedeemOnlyToken(AccountId);
@@ -75,6 +115,11 @@ pub mod finance {
             self.0
         }
     }
+    impl Token for SupportedToken {
+        fn id(&self) -> AccountId {
+            self.0
+        }
+    }
 
     trait DeprecatedToken: Token {}
 
@@ -96,12 +141,20 @@ pub mod finance {
     struct NewTokenInvested(u128);
     struct User(AccountId);
     struct AdminCaller();
+    struct OracleCaller();
+    struct Block(u32);
+    struct NewUpdatedAt(u32);
+    struct NewPriceUpdatedAt(u32, u128);
+    struct NewPricedTotalBalance(u128);
+
+    struct ForwardedUser(AccountId);
 
     impl Finance {
         /// Creates a new flipper smart contract initialized with the given value.
         #[ink(constructor)]
         pub fn new(oracle: AccountId) -> Self {
             let admin = Self::env().caller();
+            let updated_at: u32 = Self::env().block_number();
             Finance {
                 admin,
                 oracle,
@@ -113,18 +166,44 @@ pub mod finance {
                 user_borrowed: Mapping::default(),
                 tokens: Mapping::default(),
                 prices: Mapping::default(),
+                updated_at,
+                user_updated_at: Mapping::default(),
+                prices_updated_at: Mapping::default(),
+                user_total_balance: Mapping::default(),
+                user_total_invested: Mapping::default(),
+                user_total_borrowed: Mapping::default(),
+        
+                user_unpriced_balance: Mapping::default(),
+                user_unpriced_invested: Mapping::default(),
+                user_unpriced_borrowed: Mapping::default(),
+        
+                user_total_balance_value: Mapping::default(),
+                user_total_invested_value: Mapping::default(),
+                user_total_borrowed_value: Mapping::default(),
             }
         }
 
+        fn forwarded_user(&self, user: AccountId, _: &OracleCaller) -> User {
+            User(user)
+        }
+
         fn enabled_token(&self, token: AccountId) -> Result<EnabledToken, FinanceError> {
-            match self.tokens.get(token) {
-                Some(v) => match v {
-                    true => Ok(EnabledToken(token)),
-                    false => Err(FinanceError::TokenDisabled)
-                },
-                None => {
-                    Err(FinanceError::TokenNotSupported)
+            if let Some(v) = self.tokens.get(token) {
+                if v {
+                    Ok(EnabledToken(token))
+                } else {
+                    Err(FinanceError::TokenDisabled)
                 }
+            } else {
+                Err(FinanceError::TokenNotSupported)
+            }
+        }
+
+        fn supported_token(&self, token: AccountId) -> Result<SupportedToken, FinanceError> {
+            if let None = self.tokens.get(token) {
+                Err(FinanceError::TokenNotSupported)
+            } else {
+                Ok(SupportedToken(token))
             }
         }
 
@@ -184,6 +263,7 @@ pub mod finance {
             self.user_borrowed.insert((token.id(), user.0), &new_user_borrowed.0);
         }
 
+
         fn new_user_balance_after_deposit(&self, token: &impl ActiveToken, user: &User, amount: u128) -> Result<NewUserBalance, FinanceError> {
             if let Some(user_balance) = self.get_user_balance(token, user) {
                 if let Some(new_user_balance) = user_balance.checked_add(amount) {
@@ -201,6 +281,20 @@ pub mod finance {
             User(e.caller())
         }
 
+        fn block_number(&self) -> Block {
+            Block(self.env().block_number())
+        }
+
+
+        fn oracle_caller(&self) -> Result<OracleCaller, FinanceError> {
+            let user = self.caller();
+            if user.0 == self.oracle {
+                Ok(OracleCaller())
+            } else {
+                Err(FinanceError::CallerIsNotOracle)
+            }
+        }
+
         fn admin_caller(&self) -> Result<AdminCaller, FinanceError> {
             let user = self.caller();
             if user.0 == self.admin {
@@ -212,6 +306,49 @@ pub mod finance {
 
         fn set_token(&mut self, token: &AccountId, _: &AdminCaller, v: bool) {
             self.tokens.insert(token, &v);
+        }
+
+        fn set_updated_at(&mut self, new_updated_at: &Option<NewUpdatedAt>, _: &OracleCaller) {
+            if let Some(updated_at) = new_updated_at {
+                self.updated_at = updated_at.0;
+            }
+        }
+
+        fn set_price_updated_at(&mut self, token: &SupportedToken, new_price_updated_at: &Option<NewPriceUpdatedAt>, _: &OracleCaller) {
+            if let Some(price_updated_at) = new_price_updated_at {
+                self.prices_updated_at.insert(token.0, &price_updated_at.0);
+                self.prices.insert(token.0, &price_updated_at.1);
+            }
+        }
+
+        fn set_user_updated_at(&mut self, user: &User, new_user_updated_at: &Option<NewUserUpdatedAt>, _: &OracleCaller) {
+            if let Some(user_updated_at) = new_user_updated_at {
+                self.user_updated_at.insert(user.0, &user_updated_at.0);
+            }
+        }
+
+        fn set_user_unpriced_balance(&mut self, user: &User, new_user_unpriced_balance: NewUserUnpricedBalance) {
+            self.user_unpriced_balance.insert(user.0, &new_user_unpriced_balance.0);
+        }
+
+        fn set_user_unpriced_invested(&mut self, user: &User, new_user_unpriced_invested: NewUserUnpricedInvested) {
+            self.user_unpriced_invested.insert(user.0, &new_user_unpriced_invested.0);
+        }
+
+        fn set_user_unpriced_borrowed(&mut self, user: &User, new_user_unpriced_borrowed: NewUserUnpricedBorrowed) {
+            self.user_unpriced_borrowed.insert(user.0, &new_user_unpriced_borrowed.0);
+        }
+
+        fn set_user_total_balance_value(&mut self, user: &User, new_user_total_balance_value: NewUserTotalBalanceValue) {
+            self.user_total_balance_value.insert(user.0, &new_user_total_balance_value.0);
+        }
+
+        fn set_user_total_invested_value(&mut self, user: &User, new_user_total_invested_value: NewUserTotalInvestedValue) {
+            self.user_total_invested_value.insert(user.0, &new_user_total_invested_value.0);
+        }
+
+        fn set_user_total_borrowed_value(&mut self, user: &User, new_user_total_borrowed_value: NewUserTotalBorrowedValue) {
+            self.user_total_borrowed_value.insert(user.0, &new_user_total_borrowed_value.0);
         }
 
         fn withdraw_only_token(&self, token: AccountId) -> WithdrawOnlyToken {
@@ -339,6 +476,208 @@ pub mod finance {
             }
         }
 
+        fn new_updated_at(&self, block: &Block) -> Option<NewUpdatedAt> {
+            if self.updated_at == block.0 {
+                None
+            } else {
+                Some(NewUpdatedAt(block.0))
+            }
+        }
+
+        fn new_price_updated_at(&self, token: &SupportedToken, block: &Block, price: u128, new_updated_at: &Option<NewUpdatedAt>) -> Option<NewPriceUpdatedAt> {
+            let is_new = if let Some(price_updated_at) = self.prices_updated_at.get(token.0) {
+                if let None = new_updated_at {
+                    if price_updated_at == self.updated_at {
+                        false
+                    } else {
+                        true
+                    }
+                } else {
+                    true
+                }
+            } else {
+                true
+            };
+            if is_new {
+                Some(NewPriceUpdatedAt(block.0, price))
+            } else {
+                None
+            }
+        }
+
+        fn new_user_updated_at(&self, user: &User, block: &Block, new_updated_at: &Option<NewUpdatedAt>) -> Option<NewUserUpdatedAt> {
+            let is_new = if let Some(user_updated_at) = self.user_updated_at.get(user.0) {
+                if let None = new_updated_at {
+                    if user_updated_at == self.updated_at {
+                        false
+                    } else {
+                        true
+                    }
+                } else {
+                    true
+                }
+            } else {
+                true
+            };
+            if is_new {
+                Some(NewUserUpdatedAt(block.0))
+            } else {
+                None
+            }
+        }
+
+        fn new_user_unpriced_balance(&self, token: &SupportedToken, user: &User, new_user_updated_at: &Option<NewUserUpdatedAt>) -> Result<NewUserUnpricedBalance, FinanceError> {
+            let base_unpriced_balance = if let Some(_) = new_user_updated_at {
+                if let Some(user_total_balance) = self.user_total_balance.get(user.0) {
+                    user_total_balance
+                } else {
+                    0
+                }
+            } else {
+                if let Some(user_unpriced_balance) = self.user_unpriced_balance.get(user.0) {
+                    user_unpriced_balance
+                } else {
+                    0
+                }
+            };
+            if let Some(user_token_balance) = self.get_user_balance(token, user) {
+                if let Some(new_unpriced_balance) = base_unpriced_balance.checked_sub(user_token_balance) {
+                    Ok(NewUserUnpricedBalance(new_unpriced_balance))
+                } else {
+                    Err(FinanceError::UnpricedBalanceOverflowImpossible)
+                }
+            } else {
+                Ok(NewUserUnpricedBalance(base_unpriced_balance))
+            }
+        }
+
+        fn new_user_unpriced_invested(&self, token: &SupportedToken, user: &User, new_user_updated_at: &Option<NewUserUpdatedAt>) -> Result<NewUserUnpricedInvested, FinanceError> {
+            let base_unpriced_invested = if let Some(_) = new_user_updated_at {
+                if let Some(user_total_invested) = self.user_total_invested.get(user.0) {
+                    user_total_invested
+                } else {
+                    0
+                }
+            } else {
+                if let Some(user_unpriced_invested) = self.user_unpriced_invested.get(user.0) {
+                    user_unpriced_invested
+                } else {
+                    0
+                }
+            };
+            if let Some(user_token_invested) = self.get_user_invested(token, user) {
+                if let Some(new_unpriced_invested) = base_unpriced_invested.checked_sub(user_token_invested) {
+                    Ok(NewUserUnpricedInvested(new_unpriced_invested))
+                } else {
+                    Err(FinanceError::UnpricedInvestedOverflowImpossible)
+                }
+            } else {
+                Ok(NewUserUnpricedInvested(base_unpriced_invested))
+            }
+        }
+        fn new_user_unpriced_borrowed(&self, token: &SupportedToken, user: &User, new_user_updated_at: &Option<NewUserUpdatedAt>) -> Result<NewUserUnpricedBorrowed, FinanceError> {
+            let base_unpriced_borrowed = if let None = new_user_updated_at {
+                if let Some(user_unpriced_borrowed) = self.user_unpriced_borrowed.get(user.0) {
+                    user_unpriced_borrowed
+                } else {
+                    0
+                }
+            } else {
+                if let Some(user_total_borrowed) = self.user_total_borrowed.get(user.0) {
+                    user_total_borrowed
+                } else {
+                    0
+                }
+            };
+            if let Some(user_token_borrowed) = self.get_user_borrowed(token, user) {
+                if let Some(new_unpriced_borrowed) = base_unpriced_borrowed.checked_sub(user_token_borrowed) {
+                    Ok(NewUserUnpricedBorrowed(new_unpriced_borrowed))
+                } else {
+                    Err(FinanceError::UnpricedBorrowedOverflowImpossible)
+                }
+            } else {
+                Ok(NewUserUnpricedBorrowed(base_unpriced_borrowed))
+            }
+        }
+
+        fn new_user_total_balance_value(&self, token: &SupportedToken, user: &User, price: u128, new_user_updated_at: &Option<NewUserUpdatedAt>) -> Result<NewUserTotalBalanceValue, FinanceError> {
+            let user_base_balance_value = if let None = new_user_updated_at {
+                if let Some(user_total_balance_value) = self.user_total_balance_value.get(user.0) {
+                    user_total_balance_value
+                } else {
+                    0
+                }
+            } else {
+                0
+            };
+            let user_token_balance_value = if let Some(token_balance) = self.get_user_balance(token, user) {
+                if let Some(token_balance_value) = token_balance.checked_mul(price) {
+                    Ok(token_balance_value)
+                } else {
+                    Err(FinanceError::UserBalanceValueTooHigh)
+                }
+            } else {
+                Ok(0)
+            }?;
+            if let Some(new_total_balance_value) = user_base_balance_value.checked_add(user_token_balance_value) {
+                Ok(NewUserTotalBalanceValue(new_total_balance_value))
+            } else {
+                Err(FinanceError::UserTotalBalanceValueTooHigh)
+            }
+        }
+
+        fn new_user_total_invested_value(&self, token: &SupportedToken, user: &User, price: u128, new_user_updated_at: &Option<NewUserUpdatedAt>) -> Result<NewUserTotalInvestedValue, FinanceError> {
+            let user_base_invested_value = if let None = new_user_updated_at {
+                if let Some(user_total_invested_value) = self.user_total_invested_value.get(user.0) {
+                    user_total_invested_value
+                } else {
+                    0
+                }
+            } else {
+                0
+            };
+            let user_token_invested_value = if let Some(token_invested) = self.get_user_invested(token, user) {
+                if let Some(token_invested_value) = token_invested.checked_mul(price) {
+                    Ok(token_invested_value)
+                } else {
+                    Err(FinanceError::UserInvestedValueTooHigh)
+                }
+            } else {
+                Ok(0)
+            }?;
+            if let Some(new_total_invested_value) = user_base_invested_value.checked_add(user_token_invested_value) {
+                Ok(NewUserTotalInvestedValue(new_total_invested_value))
+            } else {
+                Err(FinanceError::UserTotalInvestedValueTooHigh)
+            }
+        }
+
+        fn new_user_total_borrowed_value(&self, token: &SupportedToken, user: &User, price: u128, new_user_updated_at: &Option<NewUserUpdatedAt>) -> Result<NewUserTotalBorrowedValue, FinanceError> {
+            let user_base_borrowed_value = if let None = new_user_updated_at {
+                if let Some(user_total_borrowed_value) = self.user_total_borrowed_value.get(user.0) {
+                    user_total_borrowed_value
+                } else {
+                    0
+                }
+            } else {
+                0
+            };
+            let user_token_borrowed_value = if let Some(user_borrowed) = self.get_user_borrowed(token, user) {
+                if let Some(token_borrowed_value) = user_borrowed.checked_mul(price) {
+                    Ok(token_borrowed_value)
+                } else {
+                    Err(FinanceError::UserBorrowedValueTooHigh)
+                }
+            } else {
+                Ok(0)
+            }?;
+            if let Some(new_total_borrowed_value) = user_base_borrowed_value.checked_add(user_token_borrowed_value) {
+                Ok(NewUserTotalBorrowedValue(new_total_borrowed_value))
+            } else {
+                Err(FinanceError::UserTotalBorrowedValueTooHigh)
+            }
+        }
+
         #[ink(message)]
         pub fn deposit(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
             let user = &self.caller();
@@ -421,6 +760,37 @@ pub mod finance {
 
             self.set_token_borrowed(token, new_borrowed);
             self.set_user_borrowed(token, user, new_user_borrowed);
+
+            Ok(())
+        }
+
+        #[ink(message)]
+        pub fn update_price(&mut self, token: AccountId, user: AccountId, price: u128) -> Result<(), FinanceError> {
+            let oracle = &self.oracle_caller()?;
+            let user = &self.forwarded_user(user, oracle);
+            let block = &self.block_number();
+            let token = &self.supported_token(token)?;
+            let new_updated_at = &self.new_updated_at(block);
+            let new_price_updated_at = &self.new_price_updated_at(token, block, price, new_updated_at);
+
+            let new_user_updated_at = &self.new_user_updated_at(user, block, new_updated_at);
+            let new_user_unpriced_balance = self.new_user_unpriced_balance(token, user, new_user_updated_at)?;
+            let new_user_unpriced_invested = self.new_user_unpriced_invested(token, user, new_user_updated_at)?;
+            let new_user_unpriced_borrowed = self.new_user_unpriced_borrowed(token, user, new_user_updated_at)?;
+            let new_user_total_balance_value = self.new_user_total_balance_value(token, user, price, new_user_updated_at)?;
+            let new_user_total_invested_value = self.new_user_total_invested_value(token, user, price, new_user_updated_at)?;
+            let new_user_total_borrowed_value = self.new_user_total_borrowed_value(token, user, price, new_user_updated_at)?;
+
+            self.set_updated_at(new_updated_at, oracle);
+            self.set_price_updated_at(token, new_price_updated_at, oracle);
+
+            self.set_user_unpriced_balance(user, new_user_unpriced_balance);
+            self.set_user_unpriced_invested(user, new_user_unpriced_invested);
+            self.set_user_unpriced_borrowed(user, new_user_unpriced_borrowed);
+
+            self.set_user_total_balance_value(user, new_user_total_balance_value);
+            self.set_user_total_invested_value(user, new_user_total_invested_value);
+            self.set_user_total_borrowed_value(user, new_user_total_borrowed_value);
 
             Ok(())
         }
