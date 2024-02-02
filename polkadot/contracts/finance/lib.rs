@@ -4,6 +4,7 @@
 #[ink::contract]
 pub mod finance {
     use ink::storage::Mapping;
+    use primitive_types::{U128, U256};
 
     #[ink(storage)]
     pub struct Finance {
@@ -32,6 +33,10 @@ pub mod finance {
         user_total_balance_value: Mapping<AccountId, u128>,
         user_total_invested_value: Mapping<AccountId, u128>,
         user_total_borrowed_value: Mapping<AccountId, u128>,
+
+        standard_rates: Mapping<AccountId, u128>,
+        cumulative_interests: Mapping<AccountId, u128>,
+        user_cumulative_interests: Mapping<(AccountId, AccountId), u128>,
     }
     struct UpToDatePrice(u128);
 
@@ -118,6 +123,10 @@ pub mod finance {
         UserBorrowedReductionOverflowImpossible,
         UserBorrowedValueEmptyImpossible,
         UserBorrowedOverflowImpossible,
+        RateDoesNotFitImpossible,
+        TimeDeltaOverflowImpossible,
+        AccumulatedRateOverflow,
+        CalculatedInterestOverflowImpossible,
         #[cfg(any(feature = "std", test, doc))]
         Test(String)
     }
@@ -180,7 +189,10 @@ pub mod finance {
     struct OracleCaller();
     struct Block(u32);
     struct NewUpdatedAt(u32);
-    struct NewPriceUpdatedAt(u32, u128);
+    struct NewPriceUpdatedAt(u32, u128, u32);
+
+    struct Rate(u128);
+    struct Interest(u128);
 
     impl Finance {
         /// Creates a new flipper smart contract initialized with the given value.
@@ -213,6 +225,10 @@ pub mod finance {
                 user_total_balance_value: Mapping::default(),
                 user_total_invested_value: Mapping::default(),
                 user_total_borrowed_value: Mapping::default(),
+
+                standard_rates: Mapping::default(),
+                cumulative_interests: Mapping::default(),
+                user_cumulative_interests: Mapping::default(),
             }
         }
 
@@ -602,7 +618,8 @@ pub mod finance {
         }
 
         fn new_price_updated_at(&self, token: &SupportedToken, block: &Block, price: u128, new_updated_at: &Option<NewUpdatedAt>) -> Option<NewPriceUpdatedAt> {
-            let is_new = if let Some(price_updated_at) = self.prices_updated_at.get(token.0) {
+            let price_updated_at = self.prices_updated_at.get(token.0);
+            let is_new = if let Some(price_updated_at) = price_updated_at {
                 if let None = new_updated_at {
                     if price_updated_at == self.updated_at {
                         false
@@ -616,7 +633,12 @@ pub mod finance {
                 true
             };
             if is_new {
-                Some(NewPriceUpdatedAt(block.0, price))
+                let old_price_updated_at = if let Some(price_updated_at) = price_updated_at {
+                    price_updated_at
+                } else {
+                    block.0
+                };
+                Some(NewPriceUpdatedAt(block.0, price, old_price_updated_at))
             } else {
                 None
             }
@@ -795,7 +817,7 @@ pub mod finance {
             }
         }
 
-        fn up_to_date_price(&mut self, token: &impl Token, user: &User) -> Result<UpToDatePrice, FinanceError> {
+        fn up_to_date_price(&self, token: &impl Token, user: &User) -> Result<UpToDatePrice, FinanceError> {
             let price = if let Some(price) = self.prices.get(token.id()) {
                 Ok(price)
             } else {
@@ -835,7 +857,7 @@ pub mod finance {
             Ok(UpToDatePrice(price))
         }
 
-        fn updated_user_total_balance_value(&mut self, user: &User, price: &UpToDatePrice, new_user_balance: &NewUserBalance) -> Result<NewUserTotalBalanceValue, FinanceError> {
+        fn updated_user_total_balance_value(&self, user: &User, price: &UpToDatePrice, new_user_balance: &NewUserBalance) -> Result<NewUserTotalBalanceValue, FinanceError> {
             let user_total_balance_value = if let Some(user_total_balance_value) = self.user_total_balance_value.get(user.0) {
                 Ok(user_total_balance_value)
             } else {
@@ -863,7 +885,7 @@ pub mod finance {
             }
         }
 
-        fn updated_user_total_invested(&mut self, user: &User, price: &UpToDatePrice, new_user_invested: &NewUserInvested) -> Result<NewUserTotalInvestedValue, FinanceError> {
+        fn updated_user_total_invested(&self, user: &User, price: &UpToDatePrice, new_user_invested: &NewUserInvested) -> Result<NewUserTotalInvestedValue, FinanceError> {
             let user_total_invested_value = if let Some(user_total_invested_value) = self.user_total_invested_value.get(user.0) {
                 Ok(user_total_invested_value)
             } else {
@@ -891,7 +913,7 @@ pub mod finance {
             }
         }
 
-        fn updated_user_total_borrowed(&mut self, user: &User, price: &UpToDatePrice, new_user_borrowed: &NewUserBorrowed) -> Result<NewUserTotalBorrowedValue, FinanceError> {
+        fn updated_user_total_borrowed(&self, user: &User, price: &UpToDatePrice, new_user_borrowed: &NewUserBorrowed) -> Result<NewUserTotalBorrowedValue, FinanceError> {
             let user_total_borrowed_value = if let Some(user_total_borrowed_value) = self.user_total_borrowed_value.get(user.0) {
                 Ok(user_total_borrowed_value)
             } else {
@@ -917,6 +939,53 @@ pub mod finance {
             } else {
                 Err(FinanceError::UserTotalBorrowedValueTooHigh)
             }
+        }
+
+        fn get_rate(&self, token: &impl Token) -> Result<Option<Rate>, FinanceError> {
+            let invested = if let Some(invested) = self.invested.get(token.id()) {
+                invested
+            } else {
+                return Ok(None);
+            };
+            let borrowed = if let Some(borrowed) = self.borrowed.get(token.id()) {
+                borrowed
+            } else {
+                return Ok(None);
+            };
+            let standard_rate: U128 = if let Some(standard_rate) = self.standard_rates.get(token.id()) {
+                standard_rate.into()
+            } else {
+                return Ok(None);
+            };
+            if let Some(full_rate) = standard_rate.full_mul(invested.into()).checked_div(borrowed.into()) {
+                match TryInto::<U128>::try_into(full_rate) {
+                    Ok(rate) => Ok(Some(Rate(rate.as_u128()))),
+                    Err(_) => Err(FinanceError::RateDoesNotFitImpossible)
+                }
+            } else {
+                return Ok(None);
+            }
+        }
+
+        fn calculate_interest(&self, rate: &Option<Rate>, new_price_updated_at: &Option<NewPriceUpdatedAt>) -> Result<Option<Interest>, FinanceError> {
+            let time_delta = if let Some(new_price_updated_at) = new_price_updated_at {
+                if let Some(time_delta) = new_price_updated_at.0.checked_sub(new_price_updated_at.2) {
+                    Ok(time_delta)
+                } else {
+                    Err(FinanceError::TimeDeltaOverflowImpossible)
+                }
+            } else {
+                return Ok(None);
+            }?;
+            let accumulated_rate = if let Some(rate) = rate {
+                if let Some(accumulated_rate) = rate.0.checked_mul(time_delta.into()) {
+                    Ok(accumulated_rate)
+                } else {
+                    Err(FinanceError::AccumulatedRateOverflow)
+                }
+            } else {
+                return Ok(None);
+            }?;
         }
 
         #[ink(message)]
