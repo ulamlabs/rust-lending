@@ -33,6 +33,7 @@ pub mod finance {
         user_total_invested_value: Mapping<AccountId, u128>,
         user_total_borrowed_value: Mapping<AccountId, u128>,
     }
+    struct UpToDatePrice(u128);
 
     struct NewUserUpdatedAt(u32);
 
@@ -91,6 +92,30 @@ pub mod finance {
         WithdrawTooMuchForUserTotal,
         CallerIsNotAdmin,
         CallerIsNotOracle,
+        PriceNotFound,
+        PriceNeverUpdatedImpossible,
+        PriceOutOfDate,
+        PriceNotConfirmedByUser,
+        PriceUpdateNotComplete,
+        PriceNotUpdatedByUser,
+        PriceUpdateForBalanceNotComplete,
+        PriceUpdateForInvestedNotComplete,
+        PriceUpdateForBorrowedNotComplete,
+        UserBalanceDeltaValueOverflow,
+        UserBalanceValueOverflow,
+        UserCurrentBalanceValueOverflowImpossible,
+        UserBalanceReductionOverflowImpossible,
+        UserBalanceValueEmptyImpossible,
+        UserInvestedDeltaValueOverflow,
+        UserInvestedValueOverflow,
+        UserCurrentInvestedValueOverflowImpossible,
+        UserInvestedValueEmptyImpossible,
+        UserInvestedOverflowImpossible,
+        UserCurrentBorrowedValueOverflowImpossible,
+        UserBorrowedDeltaValueOverflow,
+        UserBorrowedValueOverflow,
+        UserBorrowedValueEmptyImpossible,
+        UserBorrowedOverflowImpossible,
         #[cfg(any(feature = "std", test, doc))]
         Test(String)
     }
@@ -141,12 +166,12 @@ pub mod finance {
     impl ActiveToken for RedepositOnlyToken {}
 
     struct NewTokenBalance(u128);
-    struct NewUserBalance(u128);
+    struct NewUserBalance(u128, u128);
 
     struct NewTokenBorrowed(u128);
-    struct NewUserBorrowed(u128);
+    struct NewUserBorrowed(u128, u128);
 
-    struct NewUserInvested(u128);
+    struct NewUserInvested(u128, u128);
     struct NewTokenInvested(u128);
     struct User(AccountId);
     struct AdminCaller();
@@ -285,12 +310,12 @@ pub mod finance {
         fn new_user_balance_after_deposit(&self, token: &impl ActiveToken, user: &User, amount: u128) -> Result<NewUserBalance, FinanceError> {
             if let Some(user_balance) = self.get_user_balance(token, user) {
                 if let Some(new_user_balance) = user_balance.checked_add(amount) {
-                    Ok(NewUserBalance(new_user_balance))
+                    Ok(NewUserBalance(new_user_balance, user_balance))
                 } else {
                     Err(FinanceError::DepositUserOverflow)
                 }
             } else {
-                Ok(NewUserBalance(amount))
+                Ok(NewUserBalance(amount, 0))
             }
         }
 
@@ -400,7 +425,7 @@ pub mod finance {
         fn new_user_balance_after_withdraw(&self, token: &impl Token, user: &User, amount: u128) -> Result<NewUserBalance, FinanceError> {
             if let Some(user_balance) = self.get_user_balance(token, user) {
                 if let Some(new_user_balance) = user_balance.checked_sub(amount) {
-                    Ok(NewUserBalance(new_user_balance))
+                    Ok(NewUserBalance(new_user_balance, user_balance))
                 } else {
                     Err(FinanceError::WithdrawTooMuchForUser)
                 }
@@ -425,12 +450,12 @@ pub mod finance {
         fn new_user_invested_after_invest(&self, token: &EnabledToken, user: &User, amount: u128) -> Result<NewUserInvested, FinanceError> {
             if let Some(user_invested) = self.get_user_invested(token, user) {
                 if let Some(new_user_invested) = user_invested.checked_add(amount) {
-                    Ok(NewUserInvested(new_user_invested))
+                    Ok(NewUserInvested(new_user_invested, user_invested))
                 } else {
                     Err(FinanceError::UserInvestOverflow)
                 }
             } else {
-                Ok(NewUserInvested(amount))
+                Ok(NewUserInvested(amount,0 ))
             }
         }
 
@@ -473,7 +498,7 @@ pub mod finance {
         fn new_user_invested_after_redeposit(&self, token: &impl DeprecatedToken, user: &User, amount: u128) -> Result<NewUserInvested, FinanceError> {
             if let Some(user_invested) = self.get_user_invested(token, user) {
                 if let Some(new_user_invested) = user_invested.checked_sub(amount) {
-                    Ok(NewUserInvested(new_user_invested))
+                    Ok(NewUserInvested(new_user_invested, user_invested))
                 } else {
                     Err(FinanceError::RedepositTooMuchForUser)
                 }
@@ -509,12 +534,12 @@ pub mod finance {
         fn new_user_borrowed_after_borrow(&self, token: &impl ActiveToken, user: &User, amount: u128) -> Result<NewUserBorrowed, FinanceError> {
             if let Some(user_borrowed) = self.get_user_borrowed(token, user) {
                 if let Some(new_user_borrowed) = user_borrowed.checked_add(amount) {
-                    Ok(NewUserBorrowed(new_user_borrowed))
+                    Ok(NewUserBorrowed(new_user_borrowed, user_borrowed))
                 } else {
                     Err(FinanceError::UserBorrowOverflow)
                 }
             } else {
-                Ok(NewUserBorrowed(amount))
+                Ok(NewUserBorrowed(amount, 0))
             }
         }
 
@@ -545,7 +570,7 @@ pub mod finance {
         fn new_user_borrowed_after_redeem(&self, token: &impl DeprecatedToken, user: &User, amount: u128) -> Result<NewUserBorrowed, FinanceError> {
             if let Some(user_borrowed) = self.get_user_borrowed(token, user) {
                 if let Some(new_user_borrowed) = user_borrowed.checked_sub(amount) {
-                    Ok(NewUserBorrowed(new_user_borrowed))
+                    Ok(NewUserBorrowed(new_user_borrowed, user_borrowed))
                 } else {
                     Err(FinanceError::RedeemTooMuchForUser)
                 }
@@ -768,75 +793,161 @@ pub mod finance {
             }
         }
 
+        fn up_to_date_price(&mut self, token: &impl Token, user: &User) -> Result<UpToDatePrice, FinanceError> {
+            let price = if let Some(price) = self.prices.get(token.id()) {
+                Ok(price)
+            } else {
+                Err(FinanceError::PriceNotFound)
+            }?;
+            let price_updated_at = if let Some(price_updated_at) = self.prices_updated_at.get(token.id()) {
+                Ok(price_updated_at)
+            } else {
+                Err(FinanceError::PriceNeverUpdatedImpossible)
+            }?;
+            let user_updated_at = if let Some(user_updated_at) = self.user_updated_at.get(user.0) {
+                Ok(user_updated_at)
+            } else {
+                Err(FinanceError::PriceNotUpdatedByUser)
+            }?;
+            if price_updated_at != self.updated_at {
+                return Err(FinanceError::PriceOutOfDate);
+            }
+            if user_updated_at != self.updated_at {
+                return Err(FinanceError::PriceNotConfirmedByUser);
+            }
+            if let Some(unpriced_balance) = self.user_unpriced_balance.get(user.0) {
+                if unpriced_balance != 0 {
+                    return Err(FinanceError::PriceUpdateForBalanceNotComplete);
+                }
+            }
+            if let Some(unpriced_invested) = self.user_unpriced_invested.get(user.0) {
+                if unpriced_invested != 0 {
+                    return Err(FinanceError::PriceUpdateForInvestedNotComplete);
+                }
+            }
+            if let Some(unpriced_borrowed) = self.user_unpriced_borrowed.get(user.0) {
+                if unpriced_borrowed != 0 {
+                    return Err(FinanceError::PriceUpdateForBorrowedNotComplete);
+                }
+            }
+            Ok(UpToDatePrice(price))
+        }
+
+        fn updated_user_total_balance_value(&mut self, user: &User, price: &UpToDatePrice, new_user_balance: &NewUserBalance) -> Result<NewUserTotalBalanceValue, FinanceError> {
+            let user_total_balance_value = if let Some(user_total_balance_value) = self.user_total_balance_value.get(user.0) {
+                Ok(user_total_balance_value)
+            } else {
+                Err(FinanceError::UserBalanceValueEmptyImpossible)
+            }?;
+            let old_user_balance_value = if let Some(old_user_balance_value) = new_user_balance.1.checked_mul(price.0) {
+                Ok(old_user_balance_value)
+            } else {
+                Err(FinanceError::UserCurrentBalanceValueOverflowImpossible)
+            }?;
+            let base_user_balance_value = if let Some(base_user_balance_value) = user_total_balance_value.checked_sub(old_user_balance_value) {
+                Ok(base_user_balance_value)
+            } else {
+                Err(FinanceError::UserBalanceDeltaValueOverflow)
+            }?;
+            let new_user_balance_value = if let Some(new_user_balance_value) = new_user_balance.0.checked_mul(price.0) {
+                Ok(new_user_balance_value)
+            } else {
+                Err(FinanceError::UserBalanceValueOverflow)
+            }?;
+            if let Some(new_total_user_balance_value) = base_user_balance_value.checked_add(new_user_balance_value) {
+                Ok(NewUserTotalBalanceValue(new_total_user_balance_value))
+            } else {
+                Err(FinanceError::UserTotalBalanceValueTooHigh)
+            }
+        }
+
         #[ink(message)]
         pub fn deposit(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
             let user = &self.caller();
             let token = &self.enabled_token(token)?;
+            let price = &self.up_to_date_price(token, user)?;
             let new_user_balance = self.new_user_balance_after_deposit(token, user, amount)?;
             let new_balance = self.new_token_balance_after_deposit(token, amount)?;
             let new_user_total_balance = self.new_user_total_balance_after_deposit(user, amount)?;
-
+            let new_user_total_balance_value = self.updated_user_total_balance_value(user, price, &new_user_balance)?;
+            
             self.set_user_balance(token, user, new_user_balance);
             self.set_token_balance(token, new_balance);
             self.set_user_total_balance(user, new_user_total_balance);
-
+            self.set_user_total_balance_value(user, new_user_total_balance_value);
+            
             Ok(())
         }
-
+        
         #[ink(message)]
         pub fn withdraw(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
             let user = &self.caller();
             let token = &self.withdraw_only_token(token);
+            let price = &self.up_to_date_price(token, user)?;
             let new_user_total_balance = self.new_user_total_balance_after_withdraw(user, amount)?;
             let new_balance = self.new_token_balance_after_withdraw(token, amount)?;
             let new_user_balance = self.new_user_balance_after_withdraw(token, user, amount)?;
-
+            let new_user_total_balance_value = self.updated_user_total_balance_value(user, price, &new_user_balance)?;
+            
             self.set_token_balance(token, new_balance);
             self.set_user_balance(token, user, new_user_balance);
             self.set_user_total_balance(user, new_user_total_balance);
-
+            self.set_user_total_balance_value(user, new_user_total_balance_value);
+            
             Ok(())
         }
-
+        
         #[ink(message)]
         pub fn invest(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
             let user = &self.caller();
             let token = &self.enabled_token(token)?;
+            let price = &self.up_to_date_price(token, user)?;
+            
             let new_user_total_invested = self.new_user_total_invested_after_invest(user, amount)?;
             let new_user_invested = self.new_user_invested_after_invest(token, user, amount)?;
             let new_invested = self.new_token_invested_after_invest(token, amount)?;
+            
             let new_balance = self.new_token_balance_after_withdraw(token, amount)?;
             let new_user_balance = self.new_user_balance_after_withdraw(token, user, amount)?;
             let new_user_total_balance = self.new_user_total_balance_after_withdraw(user, amount)?;
-
+            let new_user_total_balance_value = self.updated_user_total_balance_value(user, price, &new_user_balance)?;
+            
             self.set_token_balance(token, new_balance);
             self.set_user_balance(token, user, new_user_balance);
             self.set_user_total_balance(user, new_user_total_balance);
+            self.set_user_total_balance_value(user, new_user_total_balance_value);
+            
             self.set_user_invested(token, user, new_user_invested);
             self.set_token_invested(token, new_invested);
             self.set_user_total_invested(user, new_user_total_invested);
-
+            
             Ok(())
         }
-
+        
         #[ink(message)]
         pub fn redeposit(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
             let user = &self.caller();
             let token = &self.redeposit_only_token(token);
+            let price = &self.up_to_date_price(token, user)?;
+            
             let new_invested = self.new_token_invested_after_redeposit(token, amount)?;
             let new_user_invested = self.new_user_invested_after_redeposit(token, user, amount)?;
             let new_user_total_invested = self.new_user_total_invested_after_redeposit(user, amount)?;
+            
             let new_balance = self.new_token_balance_after_deposit(token, amount)?;
             let new_user_balance = self.new_user_balance_after_deposit(token, user, amount)?;
             let new_user_total_balance = self.new_user_total_balance_after_deposit(user, amount)?;
-
+            let new_user_total_balance_value = self.updated_user_total_balance_value(user, price, &new_user_balance)?;
+            
             self.set_token_balance(token, new_balance);
             self.set_user_balance(token, user, new_user_balance);
             self.set_user_total_balance(user, new_user_total_balance);
+            self.set_user_total_balance_value(user, new_user_total_balance_value);
+            
             self.set_user_invested(token, user, new_user_invested);
             self.set_token_invested(token, new_invested);
             self.set_user_total_invested(user, new_user_total_invested);
-
+            
             Ok(())
         }
 
