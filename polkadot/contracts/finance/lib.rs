@@ -110,10 +110,12 @@ pub mod finance {
         UserInvestedValueOverflow,
         UserCurrentInvestedValueOverflowImpossible,
         UserInvestedValueEmptyImpossible,
+        UserInvestedReductionOverflowImpossible,
         UserInvestedOverflowImpossible,
         UserCurrentBorrowedValueOverflowImpossible,
         UserBorrowedDeltaValueOverflow,
         UserBorrowedValueOverflow,
+        UserBorrowedReductionOverflowImpossible,
         UserBorrowedValueEmptyImpossible,
         UserBorrowedOverflowImpossible,
         #[cfg(any(feature = "std", test, doc))]
@@ -847,7 +849,7 @@ pub mod finance {
             let base_user_balance_value = if let Some(base_user_balance_value) = user_total_balance_value.checked_sub(old_user_balance_value) {
                 Ok(base_user_balance_value)
             } else {
-                Err(FinanceError::UserBalanceDeltaValueOverflow)
+                Err(FinanceError::UserBalanceReductionOverflowImpossible)
             }?;
             let new_user_balance_value = if let Some(new_user_balance_value) = new_user_balance.0.checked_mul(price.0) {
                 Ok(new_user_balance_value)
@@ -858,6 +860,62 @@ pub mod finance {
                 Ok(NewUserTotalBalanceValue(new_total_user_balance_value))
             } else {
                 Err(FinanceError::UserTotalBalanceValueTooHigh)
+            }
+        }
+
+        fn updated_user_total_invested(&mut self, user: &User, price: &UpToDatePrice, new_user_invested: &NewUserInvested) -> Result<NewUserTotalInvestedValue, FinanceError> {
+            let user_total_invested_value = if let Some(user_total_invested_value) = self.user_total_invested_value.get(user.0) {
+                Ok(user_total_invested_value)
+            } else {
+                Err(FinanceError::UserInvestedValueEmptyImpossible)
+            }?;
+            let old_user_invested_value = if let Some(old_user_invested_value) = new_user_invested.1.checked_mul(price.0) {
+                Ok(old_user_invested_value)
+            } else {
+                Err(FinanceError::UserCurrentInvestedValueOverflowImpossible)
+            }?;
+            let base_user_invested_value = if let Some(base_user_invested_value) = user_total_invested_value.checked_sub(old_user_invested_value) {
+                Ok(base_user_invested_value)
+            } else {
+                Err(FinanceError::UserInvestedReductionOverflowImpossible)
+            }?;
+            let new_user_invested_value = if let Some(new_user_invested_value) = new_user_invested.0.checked_mul(price.0) {
+                Ok(new_user_invested_value)
+            } else {
+                Err(FinanceError::UserInvestedValueOverflow)
+            }?;
+            if let Some(new_total_user_invested_value) = base_user_invested_value.checked_add(new_user_invested_value) {
+                Ok(NewUserTotalInvestedValue(new_total_user_invested_value))
+            } else {
+                Err(FinanceError::UserTotalInvestedValueTooHigh)
+            }
+        }
+
+        fn updated_user_total_borrowed(&mut self, user: &User, price: &UpToDatePrice, new_user_borrowed: &NewUserBorrowed) -> Result<NewUserTotalBorrowedValue, FinanceError> {
+            let user_total_borrowed_value = if let Some(user_total_borrowed_value) = self.user_total_borrowed_value.get(user.0) {
+                Ok(user_total_borrowed_value)
+            } else {
+                Err(FinanceError::UserBorrowedValueEmptyImpossible)
+            }?;
+            let old_user_borrowed_value = if let Some(old_user_borrowed_value) = new_user_borrowed.1.checked_mul(price.0) {
+                Ok(old_user_borrowed_value)
+            } else {
+                Err(FinanceError::UserCurrentBorrowedValueOverflowImpossible)
+            }?;
+            let base_user_borrowed_value = if let Some(base_user_borrowed_value) = user_total_borrowed_value.checked_sub(old_user_borrowed_value) {
+                Ok(base_user_borrowed_value)
+            } else {
+                Err(FinanceError::UserBorrowedDeltaValueOverflow)
+            }?;
+            let new_user_borrowed_value = if let Some(new_user_borrowed_value) = new_user_borrowed.0.checked_mul(price.0) {
+                Ok(new_user_borrowed_value)
+            } else {
+                Err(FinanceError::UserBorrowedDeltaValueOverflow)
+            }?;
+            if let Some(new_user_total_borrowed_value) = base_user_borrowed_value.checked_add(new_user_borrowed_value) {
+                Ok(NewUserTotalBorrowedValue(new_user_total_borrowed_value))
+            } else {
+                Err(FinanceError::UserTotalBorrowedValueTooHigh)
             }
         }
 
@@ -906,6 +964,7 @@ pub mod finance {
             let new_user_total_invested = self.new_user_total_invested_after_invest(user, amount)?;
             let new_user_invested = self.new_user_invested_after_invest(token, user, amount)?;
             let new_invested = self.new_token_invested_after_invest(token, amount)?;
+            let new_user_total_invested_value = self.updated_user_total_invested(user, price, &new_user_invested)?;
             
             let new_balance = self.new_token_balance_after_withdraw(token, amount)?;
             let new_user_balance = self.new_user_balance_after_withdraw(token, user, amount)?;
@@ -920,6 +979,7 @@ pub mod finance {
             self.set_user_invested(token, user, new_user_invested);
             self.set_token_invested(token, new_invested);
             self.set_user_total_invested(user, new_user_total_invested);
+            self.set_user_total_invested_value(user, new_user_total_invested_value);
             
             Ok(())
         }
@@ -933,6 +993,7 @@ pub mod finance {
             let new_invested = self.new_token_invested_after_redeposit(token, amount)?;
             let new_user_invested = self.new_user_invested_after_redeposit(token, user, amount)?;
             let new_user_total_invested = self.new_user_total_invested_after_redeposit(user, amount)?;
+            let new_user_total_invested_value = self.updated_user_total_invested(user, price, &new_user_invested)?;
             
             let new_balance = self.new_token_balance_after_deposit(token, amount)?;
             let new_user_balance = self.new_user_balance_after_deposit(token, user, amount)?;
@@ -947,36 +1008,45 @@ pub mod finance {
             self.set_user_invested(token, user, new_user_invested);
             self.set_token_invested(token, new_invested);
             self.set_user_total_invested(user, new_user_total_invested);
+            self.set_user_total_invested_value(user, new_user_total_invested_value);
             
             Ok(())
         }
-
+        
         #[ink(message)]
         pub fn borrow(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
             let user = &self.caller();
             let token = &self.enabled_token(token)?;
+            let price = &self.up_to_date_price(token, user)?;
+            
             let new_user_total_borrowed = self.new_user_total_borrowed_after_borrow(user, amount)?;
             let new_borrowed = self.new_token_borrowed_after_borrow(token, amount)?;
             let new_user_borrowed = self.new_user_borrowed_after_borrow(token, user, amount)?;
+            let new_user_total_borrowed_value = self.updated_user_total_borrowed(user, price, &new_user_borrowed)?;
             
             self.set_token_borrowed(token, new_borrowed);
             self.set_user_borrowed(token, user, new_user_borrowed);
             self.set_user_total_borrowed(user, new_user_total_borrowed);
-
+            self.set_user_total_borrowed_value(user, new_user_total_borrowed_value);
+            
             Ok(())
         }
-
+        
         #[ink(message)]
         pub fn redeem(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
             let user = &self.caller();
             let token = &self.redeem_only_token(token);
+            let price = &self.up_to_date_price(token, user)?;
+            
             let new_borrowed = self.new_token_borrowed_after_redeem(token, amount)?;
             let new_user_borrowed = self.new_user_borrowed_after_redeem(token, user, amount)?;
             let new_user_total_borrowed = self.new_user_total_borrowed_after_redeem(user, amount)?;
-
+            let new_user_total_borrowed_value = self.updated_user_total_borrowed(user, price, &new_user_borrowed)?;
+            
             self.set_token_borrowed(token, new_borrowed);
             self.set_user_borrowed(token, user, new_user_borrowed);
             self.set_user_total_borrowed(user, new_user_total_borrowed);
+            self.set_user_total_borrowed_value(user, new_user_total_borrowed_value);
 
             Ok(())
         }
