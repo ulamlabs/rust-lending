@@ -126,7 +126,12 @@ pub mod finance {
         RateDoesNotFitImpossible,
         TimeDeltaOverflowImpossible,
         AccumulatedRateOverflow,
+        FullRateOverflow,
+        BorrowedWithInterestOverflow,
+        InvestedWithInterestOverflow,
+        InterestOverflow,
         CalculatedInterestOverflowImpossible,
+        NegativeInterestImpossible,
         #[cfg(any(feature = "std", test, doc))]
         Test(String)
     }
@@ -180,6 +185,7 @@ pub mod finance {
     struct NewUserBalance(u128, u128);
 
     struct NewTokenBorrowed(u128);
+    struct BorrowInterest(u128);
     struct NewUserBorrowed(u128, u128);
 
     struct NewUserInvested(u128, u128);
@@ -941,7 +947,7 @@ pub mod finance {
             }
         }
 
-        fn get_rate(&self, token: &impl Token) -> Result<Option<Rate>, FinanceError> {
+        fn get_rate(&self, token: &impl Token, new_price_updated_at: &Option<NewPriceUpdatedAt>) -> Result<Option<Rate>, FinanceError> {
             let invested = if let Some(invested) = self.invested.get(token.id()) {
                 invested
             } else {
@@ -957,17 +963,14 @@ pub mod finance {
             } else {
                 return Ok(None);
             };
-            if let Some(full_rate) = standard_rate.full_mul(invested.into()).checked_div(borrowed.into()) {
+            let scaled_rate = if let Some(full_rate) = standard_rate.full_mul(invested.into()).checked_div(borrowed.into()) {
                 match TryInto::<U128>::try_into(full_rate) {
-                    Ok(rate) => Ok(Some(Rate(rate.as_u128()))),
+                    Ok(rate) => Ok(rate.as_u128()),
                     Err(_) => Err(FinanceError::RateDoesNotFitImpossible)
                 }
             } else {
                 return Ok(None);
-            }
-        }
-
-        fn calculate_interest(&self, rate: &Option<Rate>, new_price_updated_at: &Option<NewPriceUpdatedAt>) -> Result<Option<Interest>, FinanceError> {
+            }?;
             let time_delta = if let Some(new_price_updated_at) = new_price_updated_at {
                 if let Some(time_delta) = new_price_updated_at.0.checked_sub(new_price_updated_at.2) {
                     Ok(time_delta)
@@ -977,15 +980,49 @@ pub mod finance {
             } else {
                 return Ok(None);
             }?;
-            let accumulated_rate = if let Some(rate) = rate {
-                if let Some(accumulated_rate) = rate.0.checked_mul(time_delta.into()) {
-                    Ok(accumulated_rate)
+            if let Some(accumulated_rate) = scaled_rate.checked_mul(time_delta.into()) {
+                Ok(Some(Rate(accumulated_rate)))
+            } else {
+                Err(FinanceError::AccumulatedRateOverflow)
+            }
+        }
+
+        fn new_borrowed_with_interest(&self, token: &impl Token, rate: &Option<Rate>) -> Result<(NewTokenBorrowed, BorrowInterest), FinanceError> {
+            let borrowed = if let Some(borrowed) = self.borrowed.get(token.id()) {
+                borrowed
+            } else {
+                0
+            };
+            let rate: U128 = if let Some(rate) = rate {
+                rate.0.into()
+            } else {
+                return Ok((NewTokenBorrowed(borrowed), BorrowInterest(0)));
+            };
+            let unscaled_interest = rate.full_mul(borrowed.into());
+            let scaled_interest = unscaled_interest / U256::from(u64::MAX);
+            match TryInto::<U128>::try_into(scaled_interest) {
+                Ok(casted_interest) => {
+                    let casted_interest = casted_interest.as_u128();
+                    if let Some(borrowed_with_interest) = borrowed.checked_add(casted_interest) {
+                        Ok((NewTokenBorrowed(borrowed_with_interest), BorrowInterest(casted_interest)))
+                    } else {
+                        Err(FinanceError::BorrowedWithInterestOverflow)
+                    }
+                },
+                Err(_) => Err(FinanceError::InterestOverflow)
+            }
+        }
+
+        fn new_invested_with_interest(&self, token: &impl Token, interest: &BorrowInterest) -> Result<NewTokenInvested, FinanceError> {
+            if let Some(invested) = self.invested.get(token.id()) {
+                if let Some(new_invested) = invested.checked_add(interest.0) {
+                    Ok(NewTokenInvested(new_invested))
                 } else {
-                    Err(FinanceError::AccumulatedRateOverflow)
+                    Err(FinanceError::InvestedWithInterestOverflow)
                 }
             } else {
-                return Ok(None);
-            }?;
+                Ok(NewTokenInvested(interest.0))
+            }
         }
 
         #[ink(message)]
@@ -1129,6 +1166,10 @@ pub mod finance {
             let new_updated_at = &self.new_updated_at(block);
             let new_price_updated_at = &self.new_price_updated_at(token, block, price, new_updated_at);
 
+            let rate = &self.get_rate(token, new_price_updated_at)?;
+            let (new_borrowed, interest) = self.new_borrowed_with_interest(token, &rate)?;
+            let new_invested = self.new_invested_with_interest(token, &interest)?;
+
             let new_user_updated_at = &self.new_user_updated_at(user, block, new_updated_at);
             let new_user_unpriced_balance = self.new_user_unpriced_balance(token, user, new_user_updated_at)?;
             let new_user_unpriced_invested = self.new_user_unpriced_invested(token, user, new_user_updated_at)?;
@@ -1148,6 +1189,9 @@ pub mod finance {
             self.set_user_total_balance_value(user, new_user_total_balance_value);
             self.set_user_total_invested_value(user, new_user_total_invested_value);
             self.set_user_total_borrowed_value(user, new_user_total_borrowed_value);
+
+            self.set_token_borrowed(token, new_borrowed);
+            self.set_token_invested(token, new_invested);
 
             Ok(())
         }
