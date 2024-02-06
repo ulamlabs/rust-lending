@@ -758,7 +758,7 @@ pub mod finance {
             }
         }
 
-        fn new_user_unpriced_invested(&self, token: &SupportedToken, user: &User, new_user_updated_at: &Option<NewUserUpdatedAt>) -> Result<NewUserUnpricedInvested, FinanceError> {
+        fn new_user_unpriced_invested(&self, user: &User, new_user_updated_at: &Option<NewUserUpdatedAt>, new_user_invested: &NewUserInvested) -> Result<NewUserUnpricedInvested, FinanceError> {
             let base_unpriced_invested = if let Some(_) = new_user_updated_at {
                 if let Some(user_total_invested) = self.user_total_invested.get(user.0) {
                     user_total_invested
@@ -772,17 +772,13 @@ pub mod finance {
                     0
                 }
             };
-            if let Some(user_token_invested) = self.get_user_invested(token, user) {
-                if let Some(new_unpriced_invested) = base_unpriced_invested.checked_sub(user_token_invested) {
+                if let Some(new_unpriced_invested) = base_unpriced_invested.checked_sub(new_user_invested.1) {
                     Ok(NewUserUnpricedInvested(new_unpriced_invested))
                 } else {
                     Err(FinanceError::UnpricedInvestedOverflowImpossible)
                 }
-            } else {
-                Ok(NewUserUnpricedInvested(base_unpriced_invested))
-            }
         }
-        fn new_user_unpriced_borrowed(&self, token: &SupportedToken, user: &User, new_user_updated_at: &Option<NewUserUpdatedAt>) -> Result<NewUserUnpricedBorrowed, FinanceError> {
+        fn new_user_unpriced_borrowed(&self, user: &User, new_user_updated_at: &Option<NewUserUpdatedAt>, new_user_borrowed: &NewUserBorrowed) -> Result<NewUserUnpricedBorrowed, FinanceError> {
             let base_unpriced_borrowed = if let None = new_user_updated_at {
                 if let Some(user_unpriced_borrowed) = self.user_unpriced_borrowed.get(user.0) {
                     user_unpriced_borrowed
@@ -796,14 +792,10 @@ pub mod finance {
                     0
                 }
             };
-            if let Some(user_token_borrowed) = self.get_user_borrowed(token, user) {
-                if let Some(new_unpriced_borrowed) = base_unpriced_borrowed.checked_sub(user_token_borrowed) {
-                    Ok(NewUserUnpricedBorrowed(new_unpriced_borrowed))
-                } else {
-                    Err(FinanceError::UnpricedBorrowedOverflowImpossible)
-                }
+            if let Some(new_unpriced_borrowed) = base_unpriced_borrowed.checked_sub(new_user_borrowed.1) {
+                Ok(NewUserUnpricedBorrowed(new_unpriced_borrowed))
             } else {
-                Ok(NewUserUnpricedBorrowed(base_unpriced_borrowed))
+                Err(FinanceError::UnpricedBorrowedOverflowImpossible)
             }
         }
 
@@ -833,7 +825,7 @@ pub mod finance {
             }
         }
 
-        fn new_user_total_invested_value(&self, token: &SupportedToken, user: &User, price: u128, new_user_updated_at: &Option<NewUserUpdatedAt>) -> Result<NewUserTotalInvestedValue, FinanceError> {
+        fn new_user_total_invested_value(&self, user: &User, price: u128, new_user_updated_at: &Option<NewUserUpdatedAt>, new_user_invested: &NewUserInvested) -> Result<NewUserTotalInvestedValue, FinanceError> {
             let user_base_invested_value = if let None = new_user_updated_at {
                 if let Some(user_total_invested_value) = self.user_total_invested_value.get(user.0) {
                     user_total_invested_value
@@ -843,14 +835,10 @@ pub mod finance {
             } else {
                 0
             };
-            let user_token_invested_value = if let Some(token_invested) = self.get_user_invested(token, user) {
-                if let Some(token_invested_value) = token_invested.checked_mul(price) {
-                    Ok(token_invested_value)
-                } else {
-                    Err(FinanceError::UserInvestedValueTooHigh)
-                }
+            let user_token_invested_value = if let Some(token_invested_value) = new_user_invested.0.checked_mul(price) {
+                Ok(token_invested_value)
             } else {
-                Ok(0)
+                Err(FinanceError::UserInvestedValueTooHigh)
             }?;
             if let Some(new_total_invested_value) = user_base_invested_value.checked_add(user_token_invested_value) {
                 Ok(NewUserTotalInvestedValue(new_total_invested_value))
@@ -859,7 +847,7 @@ pub mod finance {
             }
         }
 
-        fn new_user_total_borrowed_value(&self, token: &SupportedToken, user: &User, price: u128, new_user_updated_at: &Option<NewUserUpdatedAt>) -> Result<NewUserTotalBorrowedValue, FinanceError> {
+        fn new_user_total_borrowed_value(&self, user: &User, price: u128, new_user_updated_at: &Option<NewUserUpdatedAt>, new_user_borrowed: &NewUserBorrowed) -> Result<NewUserTotalBorrowedValue, FinanceError> {
             let user_base_borrowed_value = if let None = new_user_updated_at {
                 if let Some(user_total_borrowed_value) = self.user_total_borrowed_value.get(user.0) {
                     user_total_borrowed_value
@@ -869,14 +857,10 @@ pub mod finance {
             } else {
                 0
             };
-            let user_token_borrowed_value = if let Some(user_borrowed) = self.get_user_borrowed(token, user) {
-                if let Some(token_borrowed_value) = user_borrowed.checked_mul(price) {
-                    Ok(token_borrowed_value)
-                } else {
-                    Err(FinanceError::UserBorrowedValueTooHigh)
-                }
+            let user_token_borrowed_value = if let Some(token_borrowed_value) = new_user_borrowed.0.checked_mul(price) {
+                Ok(token_borrowed_value)
             } else {
-                Ok(0)
+                Err(FinanceError::UserBorrowedValueTooHigh)
             }?;
             if let Some(new_total_borrowed_value) = user_base_borrowed_value.checked_add(user_token_borrowed_value) {
                 Ok(NewUserTotalBorrowedValue(new_total_borrowed_value))
@@ -1346,11 +1330,11 @@ pub mod finance {
 
             let new_user_updated_at = &self.new_user_updated_at(user, block, new_updated_at);
             let new_user_unpriced_balance = self.new_user_unpriced_balance(token, user, new_user_updated_at)?;
-            let new_user_unpriced_invested = self.new_user_unpriced_invested(token, user, new_user_updated_at)?;
-            let new_user_unpriced_borrowed = self.new_user_unpriced_borrowed(token, user, new_user_updated_at)?;
+            let new_user_unpriced_invested = self.new_user_unpriced_invested(user, new_user_updated_at, &new_user_invested)?;
+            let new_user_unpriced_borrowed = self.new_user_unpriced_borrowed(user, new_user_updated_at, &new_user_borrowed)?;
             let new_user_total_balance_value = self.new_user_total_balance_value(token, user, price, new_user_updated_at)?;
-            let new_user_total_invested_value = self.new_user_total_invested_value(token, user, price, new_user_updated_at)?;
-            let new_user_total_borrowed_value = self.new_user_total_borrowed_value(token, user, price, new_user_updated_at)?;
+            let new_user_total_invested_value = self.new_user_total_invested_value(user, price, new_user_updated_at, &new_user_invested)?;
+            let new_user_total_borrowed_value = self.new_user_total_borrowed_value(user, price, new_user_updated_at, &new_user_borrowed)?;
 
             self.set_updated_at(new_updated_at, oracle);
             self.set_price_updated_at(token, new_price_updated_at, oracle);
