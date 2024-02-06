@@ -65,6 +65,11 @@ pub mod finance {
         UserBorrowedWithCumulativeZeroImpossible,
         UserBorrowedWithCumulativeOverflow,
         UserInvestedWithCumulativeOverflow,
+        UserTotalBalanceValueEmptyImpossible,
+        UserTotalBorrowedValueEmptyImpossible,
+        BorrowHealthCheckFailed,
+        WithdrawHealthCheckFailed,
+        RedepositHealthCheckFailed,
         UnpricedBalanceOverflowImpossible,
         UnpricedInvestedOverflowImpossible,
         UnpricedBorrowedOverflowImpossible,
@@ -1174,6 +1179,47 @@ pub mod finance {
             }
         }
 
+
+        fn borrow_health_check(&self, user: &User, new_user_total_borrowed_value: &NewUserTotalBorrowedValue) -> Result<(), FinanceError> {
+            let user_total_balance_value = if let Some(user_total_balance_value) = self.user_total_balance_value.get(user.0) {
+                user_total_balance_value
+            } else {
+                0
+            };
+            if user_total_balance_value < new_user_total_borrowed_value.0 {
+                Err(FinanceError::BorrowHealthCheckFailed)
+            } else {
+                Ok(())
+            }
+        }
+
+        fn withdraw_health_check(&self, user: &User, new_user_total_balance_value: &NewUserTotalBalanceValue) -> Result<(), FinanceError> {
+            let user_total_borrowed_value = if let Some(user_total_borrowed_value) = self.user_total_borrowed_value.get(user.0) {
+                user_total_borrowed_value
+            } else {
+                0
+            };
+            if user_total_borrowed_value > new_user_total_balance_value.0 {
+                Err(FinanceError::WithdrawHealthCheckFailed)
+            } else {
+                Ok(())
+            }
+        }
+
+        fn redeposit_health_check(&self, token: &impl Token, new_invested: &NewTokenInvested) -> Result<(), FinanceError> {
+           let borrowed = if let Some(borrowed) = self.borrowed.get(token.id()) {
+                borrowed
+            } else {
+                0
+            };
+            if new_invested.0 < borrowed {
+                Err(FinanceError::RedepositHealthCheckFailed)
+            } else {
+                Ok(())
+            }
+        }
+
+
         #[ink(message)]
         pub fn deposit(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
             let user = &self.caller();
@@ -1202,6 +1248,8 @@ pub mod finance {
             let new_user_balance = self.new_user_balance_after_withdraw(token, user, amount)?;
             let new_user_total_balance_value = self.updated_user_total_balance_value(user, price, &new_user_balance)?;
             
+            self.withdraw_health_check(user, &new_user_total_balance_value)?;
+
             self.set_token_balance(token, new_balance);
             self.set_user_balance(token, user, new_user_balance);
             self.set_user_total_balance(user, new_user_total_balance);
@@ -1226,6 +1274,8 @@ pub mod finance {
             let new_user_total_balance = self.new_user_total_balance_after_withdraw(user, amount)?;
             let new_user_total_balance_value = self.updated_user_total_balance_value(user, price, &new_user_balance)?;
             
+            self.withdraw_health_check(user, &new_user_total_balance_value)?;
+
             self.set_token_balance(token, new_balance);
             self.set_user_balance(token, user, new_user_balance);
             self.set_user_total_balance(user, new_user_total_balance);
@@ -1255,6 +1305,9 @@ pub mod finance {
             let new_user_total_balance = self.new_user_total_balance_after_deposit(user, amount)?;
             let new_user_total_balance_value = self.updated_user_total_balance_value(user, price, &new_user_balance)?;
             
+            self.withdraw_health_check(user, &new_user_total_balance_value)?;
+            self.redeposit_health_check(token, &new_invested)?;
+
             self.set_token_balance(token, new_balance);
             self.set_user_balance(token, user, new_user_balance);
             self.set_user_total_balance(user, new_user_total_balance);
@@ -1278,6 +1331,8 @@ pub mod finance {
             let new_borrowed = self.new_token_borrowed_after_borrow(token, amount)?;
             let new_user_borrowed = self.new_user_borrowed_after_borrow(token, user, amount)?;
             let new_user_total_borrowed_value = self.updated_user_total_borrowed(user, price, &new_user_borrowed)?;
+
+            self.borrow_health_check(user, &new_user_total_borrowed_value)?;
             
             self.set_token_borrowed(token, new_borrowed);
             self.set_user_borrowed(token, user, new_user_borrowed);
