@@ -35,8 +35,10 @@ pub mod finance {
         user_total_borrowed_value: Mapping<AccountId, u128>,
 
         standard_rates: Mapping<AccountId, u128>,
-        cumulative_interests: Mapping<AccountId, u128>,
-        user_cumulative_interests: Mapping<(AccountId, AccountId), u128>,
+        cumulative_borrow_rate: Mapping<AccountId, u128>,
+        cumulative_invest_rate: Mapping<AccountId, u128>,
+        user_cumulative_borrow_rate: Mapping<(AccountId, AccountId), u128>,
+        user_cumulative_invest_rate: Mapping<(AccountId, AccountId), u128>,
     }
     struct UpToDatePrice(u128);
 
@@ -57,6 +59,12 @@ pub mod finance {
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
     #[derive(Debug, PartialEq, Eq, scale::Encode, scale::Decode)]
     pub enum FinanceError {
+        OldInvestedZeroImpossible,
+        CumulativeBorrowRateOverflow,
+        CumulativeInvestRateOverflow,
+        UserBorrowedWithCumulativeZeroImpossible,
+        UserBorrowedWithCumulativeOverflow,
+        UserInvestedWithCumulativeOverflow,
         UnpricedBalanceOverflowImpossible,
         UnpricedInvestedOverflowImpossible,
         UnpricedBorrowedOverflowImpossible,
@@ -69,6 +77,7 @@ pub mod finance {
         NothingToRedeem,
         NothingToRedeemForUser,
         NothingToRedeemForUserTotal,
+        UserTotalBorrowedNegativeDeltaImpossible,
         RedeemTooMuch,
         RedeemTooMuchForUser,
         RedeemTooMuchForUserTotal,
@@ -132,6 +141,7 @@ pub mod finance {
         InterestOverflow,
         CalculatedInterestOverflowImpossible,
         NegativeInterestImpossible,
+
         #[cfg(any(feature = "std", test, doc))]
         Test(String)
     }
@@ -185,11 +195,15 @@ pub mod finance {
     struct NewUserBalance(u128, u128);
 
     struct NewTokenBorrowed(u128);
+    struct OldTokenBorrowed(u128);
     struct BorrowInterest(u128);
     struct NewUserBorrowed(u128, u128);
 
     struct NewUserInvested(u128, u128);
     struct NewTokenInvested(u128);
+    struct OldTokenInvested(u128);
+    struct NewCumulativeBorrowRate(u128);
+    struct NewCumulativeInvestRate(u128);
     struct User(AccountId);
     struct AdminCaller();
     struct OracleCaller();
@@ -198,7 +212,6 @@ pub mod finance {
     struct NewPriceUpdatedAt(u32, u128, u32);
 
     struct Rate(u128);
-    struct Interest(u128);
 
     impl Finance {
         /// Creates a new flipper smart contract initialized with the given value.
@@ -233,8 +246,10 @@ pub mod finance {
                 user_total_borrowed_value: Mapping::default(),
 
                 standard_rates: Mapping::default(),
-                cumulative_interests: Mapping::default(),
-                user_cumulative_interests: Mapping::default(),
+                cumulative_borrow_rate: Mapping::default(),
+                cumulative_invest_rate: Mapping::default(),
+                user_cumulative_borrow_rate: Mapping::default(),
+                user_cumulative_invest_rate: Mapping::default(),
             }
         }
 
@@ -330,6 +345,21 @@ pub mod finance {
             self.user_total_borrowed.insert(user.0, &new_user_total_borrowed.0);
         }
 
+        fn set_cumulative_borrow_rate(&mut self, token: &impl Token, new_cumulative_borrow_rate: NewCumulativeBorrowRate) {
+            self.cumulative_borrow_rate.insert(token.id(), &new_cumulative_borrow_rate.0);
+        }
+
+        fn set_cumulative_invest_rate(&mut self, token: &impl Token, new_cumulative_invest_rate: NewCumulativeInvestRate) {
+            self.cumulative_invest_rate.insert(token.id(), &new_cumulative_invest_rate.0);
+        }
+
+        fn set_user_cumulative_borrow_rate(&mut self, token: &impl Token, user: &User, new_cumulative_borrow_rate: &NewCumulativeBorrowRate) {
+            self.user_cumulative_borrow_rate.insert((token.id(), user.0), &new_cumulative_borrow_rate.0);
+        }
+
+        fn set_user_cumulative_invest_rate(&mut self, token: &impl Token, user: &User, new_cumulative_invest_rate: &NewCumulativeInvestRate) {
+            self.user_cumulative_invest_rate.insert((token.id(), user.0), &new_cumulative_invest_rate.0);
+        }
 
         fn new_user_balance_after_deposit(&self, token: &impl ActiveToken, user: &User, amount: u128) -> Result<NewUserBalance, FinanceError> {
             if let Some(user_balance) = self.get_user_balance(token, user) {
@@ -588,6 +618,38 @@ pub mod finance {
                 }
             } else {
                 Err(FinanceError::NothingToRedeemForUserTotal)
+            }
+        }
+
+        fn new_user_total_borrowed_after_update(&self, user: &User, new_user_borrowed: &NewUserBorrowed) -> Result<NewUserTotalBorrowed, FinanceError> {
+            if let Some(user_total_borrowed) = self.user_total_borrowed.get(user.0) {
+                if let Some(base_user_total_borrowed) = user_total_borrowed.checked_sub(new_user_borrowed.1) {
+                    if let Some(new_user_total_borrowed) = base_user_total_borrowed.checked_add(new_user_borrowed.0) {
+                        Ok(NewUserTotalBorrowed(new_user_total_borrowed))
+                    } else {
+                        Err(FinanceError::UserBorrowedValueTooHigh)
+                    }
+                } else {
+                    Err(FinanceError::UserTotalBorrowedNegativeDeltaImpossible)
+                }
+            } else {
+                Ok(NewUserTotalBorrowed(new_user_borrowed.0))
+            }
+        }
+
+        fn new_user_total_invested_after_update(&self, user: &User, new_user_invested: &NewUserInvested) -> Result<NewUserTotalInvested, FinanceError> {
+            if let Some(user_total_invested) = self.user_total_invested.get(user.0) {
+                if let Some(base_user_total_invested) = user_total_invested.checked_sub(new_user_invested.1) {
+                    if let Some(new_user_total_invested) = base_user_total_invested.checked_add(new_user_invested.0) {
+                        Ok(NewUserTotalInvested(new_user_total_invested))
+                    } else {
+                        Err(FinanceError::UserInvestedValueTooHigh)
+                    }
+                } else {
+                    Err(FinanceError::UserInvestedReductionOverflowImpossible)
+                }
+            } else {
+                Ok(NewUserTotalInvested(new_user_invested.0))
             }
         }
 
@@ -987,7 +1049,7 @@ pub mod finance {
             }
         }
 
-        fn new_borrowed_with_interest(&self, token: &impl Token, rate: &Option<Rate>) -> Result<(NewTokenBorrowed, BorrowInterest), FinanceError> {
+        fn new_borrowed_with_interest(&self, token: &impl Token, rate: &Option<Rate>) -> Result<(NewTokenBorrowed, BorrowInterest, OldTokenBorrowed), FinanceError> {
             let borrowed = if let Some(borrowed) = self.borrowed.get(token.id()) {
                 borrowed
             } else {
@@ -996,15 +1058,21 @@ pub mod finance {
             let rate: U128 = if let Some(rate) = rate {
                 rate.0.into()
             } else {
-                return Ok((NewTokenBorrowed(borrowed), BorrowInterest(0)));
+                return Ok((NewTokenBorrowed(borrowed), BorrowInterest(0), OldTokenBorrowed(borrowed)));
             };
             let unscaled_interest = rate.full_mul(borrowed.into());
-            let scaled_interest = unscaled_interest / U256::from(u64::MAX);
+            let (scaled_interest, interest_mod) = unscaled_interest.div_mod(U256::from(u64::MAX));
+            let extra_unit = if interest_mod == U256::zero() {
+                0
+            } else {
+                1
+            };
+            let scaled_interest = scaled_interest + extra_unit;
             match TryInto::<U128>::try_into(scaled_interest) {
                 Ok(casted_interest) => {
                     let casted_interest = casted_interest.as_u128();
                     if let Some(borrowed_with_interest) = borrowed.checked_add(casted_interest) {
-                        Ok((NewTokenBorrowed(borrowed_with_interest), BorrowInterest(casted_interest)))
+                        Ok((NewTokenBorrowed(borrowed_with_interest), BorrowInterest(casted_interest), OldTokenBorrowed(borrowed)))
                     } else {
                         Err(FinanceError::BorrowedWithInterestOverflow)
                     }
@@ -1013,15 +1081,112 @@ pub mod finance {
             }
         }
 
-        fn new_invested_with_interest(&self, token: &impl Token, interest: &BorrowInterest) -> Result<NewTokenInvested, FinanceError> {
+        fn new_invested_with_interest(&self, token: &impl Token, interest: &BorrowInterest) -> Result<(NewTokenInvested, OldTokenInvested), FinanceError> {
             if let Some(invested) = self.invested.get(token.id()) {
                 if let Some(new_invested) = invested.checked_add(interest.0) {
-                    Ok(NewTokenInvested(new_invested))
+                    Ok((NewTokenInvested(new_invested), OldTokenInvested(invested)))
                 } else {
                     Err(FinanceError::InvestedWithInterestOverflow)
                 }
             } else {
-                Ok(NewTokenInvested(interest.0))
+                Ok((NewTokenInvested(interest.0), OldTokenInvested(0)))
+            }
+        }
+
+        fn new_cumulative_borrow_rate(&self, token: &impl Token, new_borrowed: &NewTokenBorrowed, old_borrowed: &OldTokenBorrowed) -> Result<NewCumulativeBorrowRate, FinanceError> {
+            let cumulative_borrow_rate: U128 = if let Some(cumulative_borrow_rate) = self.cumulative_borrow_rate.get(token.id()) {
+                if old_borrowed.0 == 0 {
+                    return Ok(NewCumulativeBorrowRate(cumulative_borrow_rate));
+                } else {
+                    cumulative_borrow_rate.into()
+                }
+            } else {
+                return Ok(NewCumulativeBorrowRate(u64::MAX.into()))
+            };
+            let unscaled_cumulative_borrow_rate_denominator = cumulative_borrow_rate.full_mul(new_borrowed.0.into());
+            let (scaled_cumulative_borrow_rate_denominator, cumulative_borrow_rate_denominator_mod) = unscaled_cumulative_borrow_rate_denominator.div_mod(U256::from(old_borrowed.0));
+            let extra_unit = if cumulative_borrow_rate_denominator_mod == U256::zero() {
+                0
+            } else {
+                1
+            };
+            let scaled_cumulative_borrow_rate_denominator = scaled_cumulative_borrow_rate_denominator + extra_unit;
+            match TryInto::<U128>::try_into(scaled_cumulative_borrow_rate_denominator) {
+                Ok(casted_cumulative_borrow_rate_denominator) => {
+                    Ok(NewCumulativeBorrowRate(casted_cumulative_borrow_rate_denominator.as_u128()))
+                },
+                Err(_) => Err(FinanceError::CumulativeBorrowRateOverflow)
+            }
+        }
+        fn new_cumulative_invest_rate(&self, token: &impl Token, new_invested: &NewTokenInvested, old_invested: &OldTokenInvested) -> Result<NewCumulativeInvestRate, FinanceError> {
+            let cumulative_invest_rate: U128 = if let Some(cumulative_invest_rate) = self.cumulative_invest_rate.get(token.id()) {
+                if old_invested.0 == 0 {
+                    return Ok(NewCumulativeInvestRate(cumulative_invest_rate));
+                } else {
+                    cumulative_invest_rate.into()
+                }
+            } else {
+                return Ok(NewCumulativeInvestRate(u64::MAX.into()))
+            };
+            let unscaled_cumulative_invest_rate_denominator = cumulative_invest_rate.full_mul(new_invested.0.into());
+            let scaled_cumulative_invest_rate = if let Some(scaled_cumulative_invest_rate) = unscaled_cumulative_invest_rate_denominator.checked_div(old_invested.0.into()) {
+                scaled_cumulative_invest_rate
+            } else {
+                return Err(FinanceError::OldInvestedZeroImpossible)
+            };
+            match TryInto::<U128>::try_into(scaled_cumulative_invest_rate) {
+                Ok(casted_cumulative_invest_rate) => {
+                    Ok(NewCumulativeInvestRate(casted_cumulative_invest_rate.as_u128()))
+                },
+                Err(_) => Err(FinanceError::CumulativeInvestRateOverflow)
+            }
+        }
+
+        fn new_user_borrowed_after_update(&self, token: &impl Token, user: &User, new_cumulative_borrow_rate: &NewCumulativeBorrowRate) -> Result<NewUserBorrowed, FinanceError> {
+            let user_borrowed: U128 = if let Some(user_borrowed) = self.get_user_borrowed(token, user) {
+                user_borrowed.into()
+            } else {
+                U128::zero()
+            };
+            let user_cumulative_borrow_rate = if let Some(user_cumulative_borrow_rate) = self.user_cumulative_borrow_rate.get((token.id(), user.0)) {
+                user_cumulative_borrow_rate.into()
+            } else {
+                U256::from(u64::MAX)
+            };
+            let unscaled_user_borrowed_with_cumulative_interest = user_borrowed.full_mul(new_cumulative_borrow_rate.0.into());
+            let (scaled_user_borrowed, scaled_user_borrowed_mod) = unscaled_user_borrowed_with_cumulative_interest.div_mod(user_cumulative_borrow_rate);
+            let extra_unit = if scaled_user_borrowed_mod == U256::zero() {
+                0
+            } else {
+                1
+            };
+            let scaled_user_borrowed = scaled_user_borrowed + extra_unit;
+            match TryInto::<U128>::try_into(scaled_user_borrowed) {
+                Ok(casted_user_borrowed_with_cumulative_interest) => {
+                    Ok(NewUserBorrowed(casted_user_borrowed_with_cumulative_interest.as_u128(), user_borrowed.as_u128()))
+                },
+                Err(_) => Err(FinanceError::UserBorrowedWithCumulativeOverflow)
+            }
+        }
+
+        fn new_user_invested_after_update(&self, token: &impl Token, user: &User, new_cumulative_invest_rate: &NewCumulativeInvestRate) -> Result<NewUserInvested, FinanceError> {
+            let user_invested: U128 = if let Some(user_invested) = self.get_user_invested(token, user) {
+                user_invested.into()
+            } else {
+                U128::zero()
+            };
+            let user_cumulative_invest_rate = if let Some(user_cumulative_invest_rate) = self.user_cumulative_invest_rate.get((token.id(), user.0)) {
+                user_cumulative_invest_rate.into()
+            } else {
+                U256::from(u64::MAX)
+            };
+            let unscaled_user_invested_with_cumulative_interest = user_invested.full_mul(new_cumulative_invest_rate.0.into());
+            let scaled_user_invested = unscaled_user_invested_with_cumulative_interest / user_cumulative_invest_rate;
+            match TryInto::<U128>::try_into(scaled_user_invested) {
+                Ok(casted_user_invested) => {
+                    Ok(NewUserInvested(casted_user_invested.as_u128(), user_invested.as_u128()))
+                },
+                Err(_) => Err(FinanceError::UserInvestedWithCumulativeOverflow)
             }
         }
 
@@ -1167,8 +1332,17 @@ pub mod finance {
             let new_price_updated_at = &self.new_price_updated_at(token, block, price, new_updated_at);
 
             let rate = &self.get_rate(token, new_price_updated_at)?;
-            let (new_borrowed, interest) = self.new_borrowed_with_interest(token, &rate)?;
-            let new_invested = self.new_invested_with_interest(token, &interest)?;
+            let (new_borrowed, interest, old_borrowed) = self.new_borrowed_with_interest(token, &rate)?;
+            let (new_invested, old_invested) = self.new_invested_with_interest(token, &interest)?;
+
+            let new_cumulative_borrow_rate = self.new_cumulative_borrow_rate(token, &new_borrowed, &old_borrowed)?;
+            let new_cumulative_invest_rate = self.new_cumulative_invest_rate(token, &new_invested, &old_invested)?;
+
+            let new_user_borrowed = self.new_user_borrowed_after_update(token, user, &new_cumulative_borrow_rate)?;
+            let new_user_invested = self.new_user_invested_after_update(token, user, &new_cumulative_invest_rate)?;
+
+            let new_user_total_borowed = self.new_user_total_borrowed_after_update(user, &new_user_borrowed)?;
+            let new_user_total_invested = self.new_user_total_invested_after_update(user, &new_user_invested)?;
 
             let new_user_updated_at = &self.new_user_updated_at(user, block, new_updated_at);
             let new_user_unpriced_balance = self.new_user_unpriced_balance(token, user, new_user_updated_at)?;
@@ -1192,6 +1366,18 @@ pub mod finance {
 
             self.set_token_borrowed(token, new_borrowed);
             self.set_token_invested(token, new_invested);
+
+            self.set_user_cumulative_borrow_rate(token, user, &new_cumulative_borrow_rate);
+            self.set_user_cumulative_invest_rate(token, user, &new_cumulative_invest_rate);
+
+            self.set_cumulative_borrow_rate(token, new_cumulative_borrow_rate);
+            self.set_cumulative_invest_rate(token, new_cumulative_invest_rate);
+
+            self.set_user_borrowed(token, user, new_user_borrowed);
+            self.set_user_invested(token, user, new_user_invested);
+
+            self.set_user_total_borrowed(user, new_user_total_borowed);
+            self.set_user_total_invested(user, new_user_total_invested);
 
             Ok(())
         }
