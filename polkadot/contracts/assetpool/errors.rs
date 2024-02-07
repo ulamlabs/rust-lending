@@ -7,6 +7,8 @@ pub enum AssetPoolError {
     PSP22Error(PSP22Error),
     /// RatioCalculationError due to overflow or zero division
     RatioCalculationError,
+    /// Non-manager tried to call an authorized function
+    Unauthorized
 }
 
 impl From<PSP22Error> for AssetPoolError {

@@ -70,7 +70,7 @@ pub mod assetpool {
             let evs = self.psp22.mint(self.env().caller(), shares)?;
             self.emit_events(evs);
 
-            // TODO: inform manager about balance change
+            // TODO: inform manager about balance change?
             // ...
 
             // TODO: Add events
@@ -87,10 +87,36 @@ pub mod assetpool {
             self.emit_events(evs);
             psp22_transfer(self.data.token, self.env().caller(), amount)?;
 
+            // TODO: Inform manager about balance change?
+            // ...
+
             // TODO: Add events
 
             Ok(())
         }
+
+        #[ink(message)]
+        pub fn borrow_to(&mut self, amount: u128, to: AccountId) -> AssetPoolResult {
+            if self.env().caller() != self.data.manager {
+                return Err(AssetPoolError::Unauthorized)
+            }
+            self.data.total_borrowed += amount;
+            psp22_transfer(self.data.token, to, amount)?;
+
+            Ok(())
+        }
+
+        #[ink(message)]
+        pub fn repay_from(&mut self, amount: u128, from: AccountId) -> AssetPoolResult {
+            if self.env().caller() != self.data.manager {
+                return Err(AssetPoolError::Unauthorized)
+            }
+            self.data.total_borrowed -= amount;
+            psp22_transfer_from(self.data.token, from, self.env().account_id(), amount)?;
+
+            Ok(())
+        }
+
 
         fn emit_events(&self, events: Vec<PSP22Event>) {
             for event in events {
@@ -215,6 +241,7 @@ pub mod assetpool {
     }
 
     // Math helpers
+
     fn ratio(m1: u128, m2: u128, d: u128) -> Result<u128, AssetPoolError>{
         let m1w = U256::from(m1);
         let m2w = U256::from(m2);
