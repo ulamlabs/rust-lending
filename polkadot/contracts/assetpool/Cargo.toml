@@ -1,8 +1,7 @@
 [package]
-name = "pfinance"
+name = "passetpool"
 version = "0.1.0"
 edition = "2021"
-authors = ["Lukasz <lukasz@ulam.io>"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -11,15 +10,20 @@ ink = { version = "4.3", default-features = false }
 ink_primitives = { version = "4.3", default-features = false }
 scale = { package = "parity-scale-codec", version = "3", default-features = false, features = ["derive"] }
 scale-info = { version = "2.10", default-features = false, features = ["derive"] }
-primitive-types = { version = "0.12.1", default-features = false, features = [
-    "codec",
-] }
+
+psp22 = { version = "0.2.1" , default-features = false, features = ["ink-as-dependency"] }
+primitive-types = "0.12.2"
 
 [lib]
 path="lib.rs"
 
 [features]
 default = ["std"]
-std = ["ink/std"]
+std = [
+    "ink/std",
+    "scale/std",
+    "scale-info/std",
+    "psp22/std"
+]
 ink-as-dependency = []
 e2e-tests = []
