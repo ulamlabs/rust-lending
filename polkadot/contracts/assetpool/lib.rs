@@ -56,6 +56,9 @@ pub mod assetpool {
             psp22_balance_of(self.data.token, self.env().account_id()) + self.data.total_borrowed
         }
 
+        /// Deposit assets to the pool and receive shares
+        /// The shares are represented as tokens
+        /// The interest needs to be applied before distributing shares
         #[ink(message)]
         pub fn deposit(&mut self, amount: u128) -> AssetPoolResult {
             let shares: u128 = if self.psp22.total_supply() == 0 {
