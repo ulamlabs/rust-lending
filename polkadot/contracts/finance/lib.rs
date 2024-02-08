@@ -5,6 +5,9 @@
 pub mod finance {
     use ink::storage::Mapping;
     use primitive_types::{U128, U256};
+    use traits::errors::FinanceError;
+    use traits::FinanceTrait;
+    
 
     #[ink(storage)]
     pub struct Finance {
@@ -55,101 +58,6 @@ pub mod finance {
     struct NewUserUnpricedBalance(u128);
     struct NewUserUnpricedInvested(u128);
     struct NewUserUnpricedBorrowed(u128);
-
-    #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
-    #[derive(Debug, PartialEq, Eq, scale::Encode, scale::Decode)]
-    pub enum FinanceError {
-        OldInvestedZeroImpossible,
-        CumulativeBorrowRateOverflow,
-        CumulativeInvestRateOverflow,
-        UserBorrowedWithCumulativeZeroImpossible,
-        UserBorrowedWithCumulativeOverflow,
-        UserInvestedWithCumulativeOverflow,
-        UserTotalBalanceValueEmptyImpossible,
-        UserTotalBorrowedValueEmptyImpossible,
-        BorrowHealthCheckFailed,
-        WithdrawHealthCheckFailed,
-        RedepositHealthCheckFailed,
-        UnpricedBalanceOverflowImpossible,
-        UnpricedInvestedOverflowImpossible,
-        UnpricedBorrowedOverflowImpossible,
-        UserBalanceValueTooHigh,
-        UserInvestedValueTooHigh,
-        UserBorrowedValueTooHigh,
-        UserTotalBalanceValueTooHigh,
-        UserTotalInvestedValueTooHigh,
-        UserTotalBorrowedValueTooHigh,
-        NothingToRedeem,
-        NothingToRedeemForUser,
-        NothingToRedeemForUserTotal,
-        UserTotalBorrowedNegativeDeltaImpossible,
-        RedeemTooMuch,
-        RedeemTooMuchForUser,
-        RedeemTooMuchForUserTotal,
-        BorrowOverflow,
-        UserBorrowOverflow,
-        UserBorrowTotalOverflow,
-        RedepositTooMuch,
-        NothingToRedeposit,
-        RedepositTooMuchForUser,
-        NothingToRedepositForUser,
-        RedepositTooMuchForUserTotal,
-        NothingToRedepositForUserTotal,
-        InvestOverflow,
-        UserInvestOverflow,
-        UserInvestTotalOverflow,
-        DepositOverflow,
-        DepositUserOverflow,
-        DepositUserTotalOverflow,
-        TokenNotSupported,
-        TokenDisabled,
-        NothingToWithdraw,
-        NothingToWithdrawForUser,
-        NothingToWithdrawForUserTotal,
-        WithdrawTooMuch,
-        WithdrawTooMuchForUser,
-        WithdrawTooMuchForUserTotal,
-        CallerIsNotAdmin,
-        CallerIsNotOracle,
-        PriceNotFound,
-        PriceNeverUpdatedImpossible,
-        PriceOutOfDate,
-        PriceNotConfirmedByUser,
-        PriceUpdateNotComplete,
-        PriceNotUpdatedByUser,
-        PriceUpdateForBalanceNotComplete,
-        PriceUpdateForInvestedNotComplete,
-        PriceUpdateForBorrowedNotComplete,
-        UserBalanceDeltaValueOverflow,
-        UserBalanceValueOverflow,
-        UserCurrentBalanceValueOverflowImpossible,
-        UserBalanceReductionOverflowImpossible,
-        UserBalanceValueEmptyImpossible,
-        UserInvestedDeltaValueOverflow,
-        UserInvestedValueOverflow,
-        UserCurrentInvestedValueOverflowImpossible,
-        UserInvestedValueEmptyImpossible,
-        UserInvestedReductionOverflowImpossible,
-        UserInvestedOverflowImpossible,
-        UserCurrentBorrowedValueOverflowImpossible,
-        UserBorrowedDeltaValueOverflow,
-        UserBorrowedValueOverflow,
-        UserBorrowedReductionOverflowImpossible,
-        UserBorrowedValueEmptyImpossible,
-        UserBorrowedOverflowImpossible,
-        RateDoesNotFitImpossible,
-        TimeDeltaOverflowImpossible,
-        AccumulatedRateOverflow,
-        FullRateOverflow,
-        BorrowedWithInterestOverflow,
-        InvestedWithInterestOverflow,
-        InterestOverflow,
-        CalculatedInterestOverflowImpossible,
-        NegativeInterestImpossible,
-
-        #[cfg(any(feature = "std", test, doc))]
-        Test(String)
-    }
 
     struct EnabledToken(AccountId);
     struct SupportedToken(AccountId);
@@ -257,7 +165,6 @@ pub mod finance {
                 user_cumulative_invest_rate: Mapping::default(),
             }
         }
-
         fn forwarded_user(&self, user: AccountId, _: &OracleCaller) -> User {
             User(user)
         }
@@ -1218,10 +1125,10 @@ pub mod finance {
                 Ok(())
             }
         }
-
-
+    }
+    impl FinanceTrait for Finance {
         #[ink(message)]
-        pub fn deposit(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
+        fn deposit(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
             let user = &self.caller();
             let token = &self.enabled_token(token)?;
             let price = &self.up_to_date_price(token, user)?;
@@ -1239,7 +1146,7 @@ pub mod finance {
         }
         
         #[ink(message)]
-        pub fn withdraw(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
+        fn withdraw(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
             let user = &self.caller();
             let token = &self.withdraw_only_token(token);
             let price = &self.up_to_date_price(token, user)?;
@@ -1259,7 +1166,7 @@ pub mod finance {
         }
         
         #[ink(message)]
-        pub fn invest(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
+        fn invest(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
             let user = &self.caller();
             let token = &self.enabled_token(token)?;
             let price = &self.up_to_date_price(token, user)?;
@@ -1290,7 +1197,7 @@ pub mod finance {
         }
         
         #[ink(message)]
-        pub fn redeposit(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
+        fn redeposit(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
             let user = &self.caller();
             let token = &self.redeposit_only_token(token);
             let price = &self.up_to_date_price(token, user)?;
@@ -1322,7 +1229,7 @@ pub mod finance {
         }
         
         #[ink(message)]
-        pub fn borrow(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
+        fn borrow(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
             let user = &self.caller();
             let token = &self.enabled_token(token)?;
             let price = &self.up_to_date_price(token, user)?;
@@ -1343,7 +1250,7 @@ pub mod finance {
         }
         
         #[ink(message)]
-        pub fn redeem(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
+        fn redeem(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
             let user = &self.caller();
             let token = &self.redeem_only_token(token);
             let price = &self.up_to_date_price(token, user)?;
@@ -1362,7 +1269,7 @@ pub mod finance {
         }
 
         #[ink(message)]
-        pub fn update_price(&mut self, token: AccountId, user: AccountId, price: u128) -> Result<(), FinanceError> {
+        fn update_price(&mut self, token: AccountId, user: AccountId, price: u128) -> Result<(), FinanceError> {
             let oracle = &self.oracle_caller()?;
             let user = &self.forwarded_user(user, oracle);
             let block = &self.block_number();
@@ -1422,7 +1329,7 @@ pub mod finance {
         }
 
         #[ink(message)]
-        pub fn disable(&mut self, token: AccountId) -> Result<(), FinanceError> { 
+        fn disable(&mut self, token: AccountId) -> Result<(), FinanceError> { 
             let admin = &self.admin_caller()?;
 
             self.set_token(&token, admin, false);
@@ -1430,36 +1337,16 @@ pub mod finance {
         }
 
         #[ink(message)]
-        pub fn enable(&mut self, token: AccountId) -> Result<(), FinanceError> { 
+        fn enable(&mut self, token: AccountId) -> Result<(), FinanceError> { 
             let admin = &self.admin_caller()?;
 
             self.set_token(&token, admin, true);
             Ok(())
         }
-
-        #[ink(message)]
-        pub fn balance(&self, token: AccountId) -> u128 {
-            if let Some(balance) = self.balances.get(token) {
-                balance
-            } else {
-                0
-            }
-        }
-
-        #[ink(message)]
-        pub fn user_balance(&self, token: AccountId, user: AccountId) -> u128 {
-            if let Some(user_balance) = self.user_balances.get((token, user)) {
-                user_balance
-            } else {
-                0
-            }
-        }
     }
 
     #[cfg(test)]
     mod tests {
-        use core::cmp::Ordering;
-
         use super::*;
 
         fn accounts(
@@ -1515,18 +1402,8 @@ pub mod finance {
             set_caller(admin);
             finance.enable(btc)?;
 
-            match finance.balance(btc).cmp(&0) {
-                Ordering::Equal => Ok(()),
-                _ => e("Token balance should be 0, before any deposit occurs"),
-            }?;
-
             set_caller(user);
             finance.deposit(btc, u128::MAX)?;
-
-            match finance.balance(btc).cmp(&u128::MAX) {
-                Ordering::Equal => Ok(()),
-                _ => e("Token balance should be MAX, after depositing MAX"),
-            }?;
 
             match finance.deposit(btc, 1) {
                 Err(FinanceError::DepositUserOverflow) => Ok(()),

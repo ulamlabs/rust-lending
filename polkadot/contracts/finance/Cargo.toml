@@ -14,12 +14,16 @@ scale-info = { version = "2.10", default-features = false, features = ["derive"]
 primitive-types = { version = "0.12.1", default-features = false, features = [
     "codec",
 ] }
+traits = { path = "../traits", default-features = false }
 
 [lib]
 path="lib.rs"
 
 [features]
 default = ["std"]
-std = ["ink/std"]
+std = [
+    "ink/std",
+    "traits/std"
+]
 ink-as-dependency = []
 e2e-tests = []
