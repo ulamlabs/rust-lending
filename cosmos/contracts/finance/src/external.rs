@@ -1,4 +1,4 @@
-use cosmwasm_std::to_binary;
+use cosmwasm_std::to_json_binary;
 use cosmwasm_std::{Deps, QueryRequest, WasmQuery};
 
 use crate::error::ContractResult;
@@ -12,7 +12,7 @@ pub fn query_price(deps: Deps, oracle_addr: String, denom: String) -> ContractRe
         WasmQuery::Smart { 
             contract_addr: 
             oracle_addr, 
-            msg: to_binary(&OracleQueryMsg::Price { symbol: denom })?
+            msg: to_json_binary(&OracleQueryMsg::Price { symbol: denom })?
         }
     );
     let response: PriceResponse = deps.querier.query(&msg)?;
@@ -34,7 +34,7 @@ pub fn query_prices(deps: Deps, oracle_addr: String) -> ContractResult<Vec<Price
         WasmQuery::Smart { 
             contract_addr: 
             oracle_addr, 
-            msg: to_binary(&OracleQueryMsg::Prices {})? 
+            msg: to_json_binary(&OracleQueryMsg::Prices {})? 
         }
     );
     let response: Vec<PriceResponse> = deps.querier.query(&msg)?;

@@ -1,5 +1,5 @@
 use cosmwasm_std::{
-    entry_point, to_binary, Binary, Deps, DepsMut, Env, MessageInfo, Response, StdError, Uint128,
+    entry_point, to_json_binary, Binary, Deps, DepsMut, Env, MessageInfo, Response, StdError, Uint128,
 };
 
 use crate::error::ContractError;
@@ -53,7 +53,7 @@ pub fn execute(
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> Result<Binary, ContractError> {
     match msg {
-        QueryMsg::Price { symbol } => Ok(to_binary(&query_price(deps, symbol)?)?),
-        QueryMsg::Prices {} => Ok(to_binary(&query_prices(deps)?)?),
+        QueryMsg::Price { symbol } => Ok(to_json_binary(&query_price(deps, symbol)?)?),
+        QueryMsg::Prices {} => Ok(to_json_binary(&query_prices(deps)?)?),
     }
 }

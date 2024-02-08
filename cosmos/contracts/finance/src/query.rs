@@ -1,5 +1,5 @@
 use cosmwasm_std::{
-    Binary, Deps, Env, to_binary, Uint128
+    Binary, Deps, Env, to_json_binary, Uint128
 };
 
 use crate::error::ContractResult;
@@ -11,13 +11,13 @@ use crate::state::{USER_ASSET_INFO, ASSETS, ASSET_INFO, UserAssetInfo, USER_DATA
 
 pub fn query_handler(deps: Deps, _env: Env, msg: QueryMsg) -> ContractResult<Binary> {
     let raw = match msg {
-        QueryMsg::Assets {} => to_binary(&query_assets(deps)?),
-        QueryMsg::UserAssetsInfo { user } => to_binary(&query_user_assets_info(deps, user)?),
-        QueryMsg::UserAssetInfo { user, denom } => to_binary(&query_user_asset_info(deps, user, denom)?),
-        QueryMsg::UserData { user } => to_binary(&query_user_data(deps, user)?),
-        QueryMsg::AssetInfo { denom } => to_binary(&query_asset_info(deps, denom)?),
-        QueryMsg::AssetsInfo {} => to_binary(&query_assets_info(deps)?),
-        QueryMsg::MaxLiquidationAmount { user} => to_binary(&query_max_liquidation_amount(deps, user)?),
+        QueryMsg::Assets {} => to_json_binary(&query_assets(deps)?),
+        QueryMsg::UserAssetsInfo { user } => to_json_binary(&query_user_assets_info(deps, user)?),
+        QueryMsg::UserAssetInfo { user, denom } => to_json_binary(&query_user_asset_info(deps, user, denom)?),
+        QueryMsg::UserData { user } => to_json_binary(&query_user_data(deps, user)?),
+        QueryMsg::AssetInfo { denom } => to_json_binary(&query_asset_info(deps, denom)?),
+        QueryMsg::AssetsInfo {} => to_json_binary(&query_assets_info(deps)?),
+        QueryMsg::MaxLiquidationAmount { user} => to_json_binary(&query_max_liquidation_amount(deps, user)?),
     }?;
     Ok(raw)
 }
