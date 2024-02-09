@@ -9,6 +9,7 @@ pub mod finance {
     use primitive_types::{U128, U256};
     use traits::errors::FinanceError;
     use traits::FinanceTrait;
+    use ink::prelude::vec::Vec;
     
 
     #[ink(storage)]
@@ -24,6 +25,7 @@ pub mod finance {
         tokens: Mapping<AccountId, bool>,
         token_addresses: Mapping<AccountId, AccountId>,
         prices: Mapping<AccountId, u128>,
+        oracle_prices: Mapping<AccountId, u128>,
         updated_at: u32,
         user_updated_at: Mapping<AccountId, u32>,
         prices_updated_at: Mapping<AccountId, u32>,
@@ -147,6 +149,7 @@ pub mod finance {
                 tokens: Mapping::default(),
                 token_addresses: Mapping::default(),
                 prices: Mapping::default(),
+                oracle_prices: Mapping::default(),
                 updated_at,
                 user_updated_at: Mapping::default(),
                 prices_updated_at: Mapping::default(),
@@ -168,9 +171,6 @@ pub mod finance {
                 user_cumulative_borrow_rate: Mapping::default(),
                 user_cumulative_invest_rate: Mapping::default(),
             }
-        }
-        fn forwarded_user(&self, user: AccountId, _: &OracleCaller) -> User {
-            User(user)
         }
 
         fn enabled_token(&self, token: AccountId) -> Result<EnabledToken, FinanceError> {
@@ -301,10 +301,10 @@ pub mod finance {
             }
         }
 
-        fn caller(&self, token: &impl Token) -> Result<User, FinanceError> {
-            let user = self.env().caller();
+        fn caller(&self, user: AccountId, token: &impl Token) -> Result<User, FinanceError> {
+            let caller = self.env().caller();
             if let Some(token_address) = self.token_addresses.get(token.id()) {
-                if user == token_address {
+                if caller == token_address {
                     Ok(User(user))
                 } else {
                     Err(FinanceError::CallerIsNotToken)
@@ -345,20 +345,20 @@ pub mod finance {
             self.token_addresses.insert(token, token_address);
         }
 
-        fn set_updated_at(&mut self, new_updated_at: &Option<NewUpdatedAt>, _: &OracleCaller) {
+        fn set_updated_at(&mut self, new_updated_at: &Option<NewUpdatedAt>) {
             if let Some(updated_at) = new_updated_at {
                 self.updated_at = updated_at.0;
             }
         }
 
-        fn set_price_updated_at(&mut self, token: &SupportedToken, new_price_updated_at: &Option<NewPriceUpdatedAt>, _: &OracleCaller) {
+        fn set_price_updated_at(&mut self, token: &SupportedToken, new_price_updated_at: &Option<NewPriceUpdatedAt>) {
             if let Some(price_updated_at) = new_price_updated_at {
                 self.prices_updated_at.insert(token.0, &price_updated_at.0);
                 self.prices.insert(token.0, &price_updated_at.1);
             }
         }
 
-        fn set_user_updated_at(&mut self, user: &User, new_user_updated_at: &Option<NewUserUpdatedAt>, _: &OracleCaller) {
+        fn set_user_updated_at(&mut self, user: &User, new_user_updated_at: &Option<NewUserUpdatedAt>) {
             if let Some(user_updated_at) = new_user_updated_at {
                 self.user_updated_at.insert(user.0, &user_updated_at.0);
             }
@@ -386,6 +386,10 @@ pub mod finance {
 
         fn set_user_total_borrowed_value(&mut self, user: &User, new_user_total_borrowed_value: NewUserTotalBorrowedValue) {
             self.user_total_borrowed_value.insert(user.0, &new_user_total_borrowed_value.0);
+        }
+
+        fn set_oracle_price(&mut self, token: &impl Token, price: u128, _: &OracleCaller) {
+            self.oracle_prices.insert(token.id(), &price);
         }
 
         fn withdraw_only_token(&self, token: AccountId) -> WithdrawOnlyToken {
@@ -1141,12 +1145,9 @@ pub mod finance {
                 Ok(())
             }
         }
-    }
-    impl FinanceTrait for Finance {
-        #[ink(message)]
-        fn deposit(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
+        fn deposit(&mut self, user: AccountId, token: AccountId, amount: u128) -> Result<(), FinanceError> {
             let token = &self.enabled_token(token)?;
-            let user = &self.caller(token)?;
+            let user = &self.caller(user, token)?;
             let price = &self.up_to_date_price(token, user)?;
             let new_user_balance = self.new_user_balance_after_deposit(token, user, amount)?;
             let new_balance = self.new_token_balance_after_deposit(token, amount)?;
@@ -1161,10 +1162,9 @@ pub mod finance {
             Ok(())
         }
         
-        #[ink(message)]
-        fn withdraw(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
+        fn withdraw(&mut self, user: AccountId, token: AccountId, amount: u128) -> Result<(), FinanceError> {
             let token = &self.withdraw_only_token(token);
-            let user = &self.caller(token)?;
+            let user = &self.caller(user, token)?;
             let price = &self.up_to_date_price(token, user)?;
             let new_user_total_balance = self.new_user_total_balance_after_withdraw(user, amount)?;
             let new_balance = self.new_token_balance_after_withdraw(token, amount)?;
@@ -1181,10 +1181,9 @@ pub mod finance {
             Ok(())
         }
         
-        #[ink(message)]
-        fn invest(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
+        fn invest(&mut self, user: AccountId, token: AccountId, amount: u128) -> Result<(), FinanceError> {
             let token = &self.enabled_token(token)?;
-            let user = &self.caller(token)?;
+            let user = &self.caller(user, token)?;
             let price = &self.up_to_date_price(token, user)?;
             
             let new_user_total_invested = self.new_user_total_invested_after_invest(user, amount)?;
@@ -1212,10 +1211,9 @@ pub mod finance {
             Ok(())
         }
         
-        #[ink(message)]
-        fn redeposit(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
+        fn redeposit(&mut self, user: AccountId, token: AccountId, amount: u128) -> Result<(), FinanceError> {
             let token = &self.redeposit_only_token(token);
-            let user = &self.caller(token)?;
+            let user = &self.caller(user, token)?;
             let price = &self.up_to_date_price(token, user)?;
             
             let new_invested = self.new_token_invested_after_redeposit(token, amount)?;
@@ -1244,10 +1242,9 @@ pub mod finance {
             Ok(())
         }
         
-        #[ink(message)]
-        fn borrow(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
+        fn borrow(&mut self, user: AccountId, token: AccountId, amount: u128) -> Result<(), FinanceError> {
             let token = &self.enabled_token(token)?;
-            let user = &self.caller(token)?;
+            let user = &self.caller(user, token)?;
             let price = &self.up_to_date_price(token, user)?;
             
             let new_user_total_borrowed = self.new_user_total_borrowed_after_borrow(user, amount)?;
@@ -1265,10 +1262,9 @@ pub mod finance {
             Ok(())
         }
         
-        #[ink(message)]
-        fn redeem(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
+        fn redeem(&mut self, user: AccountId, token: AccountId, amount: u128) -> Result<(), FinanceError> {
             let token = &self.redeem_only_token(token);
-            let user = &self.caller(token)?;
+            let user = &self.caller(user, token)?;
             let price = &self.up_to_date_price(token, user)?;
             
             let new_borrowed = self.new_token_borrowed_after_redeem(token, amount)?;
@@ -1284,12 +1280,10 @@ pub mod finance {
             Ok(())
         }
 
-        #[ink(message)]
-        fn update_price(&mut self, token: AccountId, user: AccountId, price: u128) -> Result<(), FinanceError> {
-            let oracle = &self.oracle_caller()?;
-            let user = &self.forwarded_user(user, oracle);
+        fn update_price(&mut self, user: AccountId, token: AccountId, price: u128) -> Result<(), FinanceError> {
             let block = &self.block_number();
             let token = &self.supported_token(token)?;
+            let user = &self.caller(user, token)?;
             let new_updated_at = &self.new_updated_at(block);
             let new_price_updated_at = &self.new_price_updated_at(token, block, price, new_updated_at);
 
@@ -1314,9 +1308,9 @@ pub mod finance {
             let new_user_total_invested_value = self.new_user_total_invested_value(user, price, new_user_updated_at, &new_user_invested)?;
             let new_user_total_borrowed_value = self.new_user_total_borrowed_value(user, price, new_user_updated_at, &new_user_borrowed)?;
 
-            self.set_updated_at(new_updated_at, oracle);
-            self.set_price_updated_at(token, new_price_updated_at, oracle);
-            self.set_user_updated_at(user, new_user_updated_at, oracle);
+            self.set_updated_at(new_updated_at);
+            self.set_price_updated_at(token, new_price_updated_at);
+            self.set_user_updated_at(user, new_user_updated_at);
 
             self.set_user_unpriced_balance(user, new_user_unpriced_balance);
             self.set_user_unpriced_invested(user, new_user_unpriced_invested);
@@ -1343,6 +1337,25 @@ pub mod finance {
 
             Ok(())
         }
+    }
+    impl FinanceTrait for Finance {
+        #[ink(message)]
+        fn update(&mut self, action: u8, user: AccountId, token: AccountId, amount: u128, tokens: Vec<AccountId>) -> Result<(), FinanceError> {
+            for t in tokens {
+                if let Some(price) = self.oracle_prices.get(&t) {
+                    self.update_price(user, t, price)?;
+                }   
+            }
+            match action {
+                0 => self.deposit(user, token, amount),
+                1 => self.withdraw(user, token, amount),
+                2 => self.invest(user, token, amount),
+                3 => self.redeposit(user, token, amount),
+                4 => self.borrow(user, token, amount),
+                5 => self.redeem(user, token, amount),
+                _ => Err(FinanceError::InvalidAction)
+            }
+        }
 
         #[ink(message)]
         fn disable(&mut self, token: AccountId) -> Result<(), FinanceError> { 
@@ -1358,6 +1371,15 @@ pub mod finance {
 
             self.set_token(&token, admin, true);
             self.set_token_address(&token, admin, &address);
+            Ok(())
+        }
+
+        #[ink(message)]
+        fn set_price(&mut self, token: AccountId, price: u128) -> Result<(), FinanceError> { 
+            let oracle = &self.oracle_caller()?;
+            let token = &self.supported_token(token)?;
+
+            self.set_oracle_price(token, price, oracle);
             Ok(())
         }
     }
