@@ -250,7 +250,29 @@ pub mod assetpool {
         let m2w = U256::from(m2);
         let dw = U256::from(d);
 
-        let res = m1w * dw / m2w;
+        let res = m1w * m2w / dw;
         res.try_into().map_err(|_| AssetPoolError::RatioCalculationError)
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn test_ratio() {
+            assert_eq!(ratio(1, 1, 1), Ok(1));
+            assert_eq!(ratio(1, 1, 2), Ok(0));
+            assert_eq!(ratio(1, 2, 1), Ok(2));
+            assert_eq!(ratio(2, 1, 1), Ok(2));
+            assert_eq!(ratio(2, 1, 2), Ok(1));
+            assert_eq!(ratio(1, 2, 2), Ok(1));
+            assert_eq!(ratio(22, 4, 22), Ok(4));
+        }
+
+        #[test]
+        fn test_ratio_overflow() {
+            assert_eq!(ratio(u128::MAX, u128::MAX, 1), Err(AssetPoolError::RatioCalculationError));
+        }
+    }
+
 }
