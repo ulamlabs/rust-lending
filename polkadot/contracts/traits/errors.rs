@@ -44,6 +44,7 @@ pub enum FinanceError {
     DepositOverflow,
     DepositUserOverflow,
     DepositUserTotalOverflow,
+    CallerIsNotToken,
     TokenNotSupported,
     TokenDisabled,
     NothingToWithdraw,

@@ -24,5 +24,5 @@ pub trait FinanceTrait {
     #[ink(message)]
     fn disable(&mut self, token: AccountId) -> Result<(), FinanceError>;
     #[ink(message)]
-    fn enable(&mut self, token: AccountId) -> Result<(), FinanceError>;
+    fn enable(&mut self, token: AccountId, address: AccountId) -> Result<(), FinanceError>;
 }

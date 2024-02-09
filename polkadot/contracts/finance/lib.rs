@@ -1,5 +1,7 @@
 #![cfg_attr(not(feature = "std"), no_std, no_main)]
 
+#[cfg(test)]
+mod tests;
 
 #[ink::contract]
 pub mod finance {
@@ -20,6 +22,7 @@ pub mod finance {
         borrowed: Mapping<AccountId, u128>,
         user_borrowed: Mapping<(AccountId, AccountId), u128>,
         tokens: Mapping<AccountId, bool>,
+        token_addresses: Mapping<AccountId, AccountId>,
         prices: Mapping<AccountId, u128>,
         updated_at: u32,
         user_updated_at: Mapping<AccountId, u32>,
@@ -142,6 +145,7 @@ pub mod finance {
                 borrowed: Mapping::default(),
                 user_borrowed: Mapping::default(),
                 tokens: Mapping::default(),
+                token_addresses: Mapping::default(),
                 prices: Mapping::default(),
                 updated_at,
                 user_updated_at: Mapping::default(),
@@ -297,9 +301,17 @@ pub mod finance {
             }
         }
 
-        fn caller(&self) -> User {
-            let e = self.env();
-            User(e.caller())
+        fn caller(&self, token: &impl Token) -> Result<User, FinanceError> {
+            let user = self.env().caller();
+            if let Some(token_address) = self.token_addresses.get(token.id()) {
+                if user == token_address {
+                    Ok(User(user))
+                } else {
+                    Err(FinanceError::CallerIsNotToken)
+                }
+            } else {
+                Err(FinanceError::TokenNotSupported)
+            }
         }
 
         fn block_number(&self) -> Block {
@@ -308,8 +320,8 @@ pub mod finance {
 
 
         fn oracle_caller(&self) -> Result<OracleCaller, FinanceError> {
-            let user = self.caller();
-            if user.0 == self.oracle {
+            let user = self.env().caller();
+            if user == self.oracle {
                 Ok(OracleCaller())
             } else {
                 Err(FinanceError::CallerIsNotOracle)
@@ -317,8 +329,8 @@ pub mod finance {
         }
 
         fn admin_caller(&self) -> Result<AdminCaller, FinanceError> {
-            let user = self.caller();
-            if user.0 == self.admin {
+            let user = self.env().caller();
+            if user == self.admin {
                 Ok(AdminCaller())
             } else {
                 Err(FinanceError::CallerIsNotAdmin)
@@ -327,6 +339,10 @@ pub mod finance {
 
         fn set_token(&mut self, token: &AccountId, _: &AdminCaller, v: bool) {
             self.tokens.insert(token, &v);
+        }
+
+        fn set_token_address(&mut self, token: &AccountId, _: &AdminCaller, token_address: &AccountId) {
+            self.token_addresses.insert(token, token_address);
         }
 
         fn set_updated_at(&mut self, new_updated_at: &Option<NewUpdatedAt>, _: &OracleCaller) {
@@ -1129,8 +1145,8 @@ pub mod finance {
     impl FinanceTrait for Finance {
         #[ink(message)]
         fn deposit(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
-            let user = &self.caller();
             let token = &self.enabled_token(token)?;
+            let user = &self.caller(token)?;
             let price = &self.up_to_date_price(token, user)?;
             let new_user_balance = self.new_user_balance_after_deposit(token, user, amount)?;
             let new_balance = self.new_token_balance_after_deposit(token, amount)?;
@@ -1147,8 +1163,8 @@ pub mod finance {
         
         #[ink(message)]
         fn withdraw(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
-            let user = &self.caller();
             let token = &self.withdraw_only_token(token);
+            let user = &self.caller(token)?;
             let price = &self.up_to_date_price(token, user)?;
             let new_user_total_balance = self.new_user_total_balance_after_withdraw(user, amount)?;
             let new_balance = self.new_token_balance_after_withdraw(token, amount)?;
@@ -1167,8 +1183,8 @@ pub mod finance {
         
         #[ink(message)]
         fn invest(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
-            let user = &self.caller();
             let token = &self.enabled_token(token)?;
+            let user = &self.caller(token)?;
             let price = &self.up_to_date_price(token, user)?;
             
             let new_user_total_invested = self.new_user_total_invested_after_invest(user, amount)?;
@@ -1198,8 +1214,8 @@ pub mod finance {
         
         #[ink(message)]
         fn redeposit(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
-            let user = &self.caller();
             let token = &self.redeposit_only_token(token);
+            let user = &self.caller(token)?;
             let price = &self.up_to_date_price(token, user)?;
             
             let new_invested = self.new_token_invested_after_redeposit(token, amount)?;
@@ -1230,8 +1246,8 @@ pub mod finance {
         
         #[ink(message)]
         fn borrow(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
-            let user = &self.caller();
             let token = &self.enabled_token(token)?;
+            let user = &self.caller(token)?;
             let price = &self.up_to_date_price(token, user)?;
             
             let new_user_total_borrowed = self.new_user_total_borrowed_after_borrow(user, amount)?;
@@ -1251,8 +1267,8 @@ pub mod finance {
         
         #[ink(message)]
         fn redeem(&mut self, token: AccountId, amount: u128) -> Result<(), FinanceError> {
-            let user = &self.caller();
             let token = &self.redeem_only_token(token);
+            let user = &self.caller(token)?;
             let price = &self.up_to_date_price(token, user)?;
             
             let new_borrowed = self.new_token_borrowed_after_redeem(token, amount)?;
@@ -1337,125 +1353,12 @@ pub mod finance {
         }
 
         #[ink(message)]
-        fn enable(&mut self, token: AccountId) -> Result<(), FinanceError> { 
+        fn enable(&mut self, token: AccountId, address: AccountId) -> Result<(), FinanceError> { 
             let admin = &self.admin_caller()?;
 
             self.set_token(&token, admin, true);
+            self.set_token_address(&token, admin, &address);
             Ok(())
         }
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        fn accounts(
-        ) -> ink::env::test::DefaultAccounts<ink::env::DefaultEnvironment> {
-            ink::env::test::default_accounts::<ink::env::DefaultEnvironment>()
-        }
-
-        fn set_caller(caller: AccountId) {
-            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(caller);
-        }
-
-        fn e(m: &'static str) -> Result<(), FinanceError> {
-            Err(FinanceError::Test(String::from(m)))
-        }
-
-        fn _run() -> Result<(), FinanceError> {
-            let callers = accounts();
-            let admin = callers.alice;
-            let oracle = callers.frank;
-            let user = callers.django;
-            let eth = callers.eve;
-            let btc = callers.bob;
-
-
-            set_caller(admin);
-            let mut finance = Finance::new(oracle);
-            
-            match finance.deposit(btc, 100) {
-                Err(FinanceError::TokenNotSupported) => Ok(()),
-                _ => e("Deposit should fail if token is not supported"),
-            }?;
-            
-            set_caller(user);
-            match finance.disable(btc) {
-                Err(FinanceError::CallerIsNotAdmin) => Ok(()),
-                _ => e("Disable should fail if caller is not admin"),
-            }?;
-
-            set_caller(admin);
-            finance.disable(btc)?;
-
-            match finance.deposit(btc, 100) {
-                Err(FinanceError::TokenDisabled) => Ok(()),
-                _ => e("Deposit should fail if token is disabled"),
-            }?;
-
-            set_caller(user);
-            match finance.enable(btc) {
-                Err(FinanceError::CallerIsNotAdmin) => Ok(()),
-                _ => e("Enable should fail if caller is not admin"),
-            }?;
-
-            set_caller(admin);
-            finance.enable(btc)?;
-
-            set_caller(user);
-            finance.deposit(btc, u128::MAX)?;
-
-            match finance.deposit(btc, 1) {
-                Err(FinanceError::DepositUserOverflow) => Ok(()),
-                _ => e("Deposit should fail if integer overflow occurs, while increasing user balance"),
-            }?;
-
-            set_caller(admin);
-            match finance.deposit(btc, 1) {
-                Err(FinanceError::DepositOverflow) => Ok(()),
-                _ => e("Deposit should fail if integer overflow occurs, while increasing token balance"),
-            }?;
-
-            match finance.withdraw(eth, 0) {
-                Err(FinanceError::NothingToWithdraw) => Ok(()),
-                _ => e("Withdraw should fail if token has no balance"),
-            }?;
-
-            match finance.withdraw(btc, 0) {
-                Err(FinanceError::NothingToWithdrawForUser) => Ok(()),
-                _ => e("Withdraw should fail if user has no balance"),
-            }?;
-            
-            set_caller(user);
-            finance.withdraw(btc, u128::MAX)?;
-
-            match finance.withdraw(btc, u128::MAX) {
-                Err(FinanceError::WithdrawTooMuch) => Ok(()),
-                _ => e("Withdraw should fail if token has not enough balance"),
-            }?;
-
-            set_caller(admin);
-            finance.deposit(btc, 1)?;
-            finance.deposit(btc, 0)?;
-
-            set_caller(user);
-            match finance.withdraw(btc, 1) {
-                Err(FinanceError::WithdrawTooMuchForUser) => Ok(()),
-                _ => e("Withdraw should fail if user has not enough balance")
-            }?;
-
-            Ok(())
-        }
-
-        #[ink::test]
-        fn run() -> Result<(), ink::env::Error> {
-            if let Err(e) = _run() {
-                eprintln!("{:?}", e);
-                Err(ink::env::Error::CallRuntimeFailed)
-            } else {
-                Ok(())
-            }
-        }
-        
     }
 }
