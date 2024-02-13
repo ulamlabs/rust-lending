@@ -13,6 +13,7 @@ scale-info = { version = "2.10", default-features = false, features = ["derive"]
 
 psp22 = { version = "0.2.1" , default-features = false, features = ["ink-as-dependency"] }
 primitive-types = "0.12.2"
+traits = { path = "../traits", default-features = false }
 
 [lib]
 path="lib.rs"
@@ -23,7 +24,8 @@ std = [
     "ink/std",
     "scale/std",
     "scale-info/std",
-    "psp22/std"
+    "psp22/std",
+    "traits/std"
 ]
 ink-as-dependency = []
 e2e-tests = []

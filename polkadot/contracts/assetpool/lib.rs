@@ -8,6 +8,7 @@ pub mod assetpool {
     use psp22::{PSP22Data, PSP22Error, PSP22, PSP22Event};
     use primitive_types::U256;
     use crate::errors::{AssetPoolError, AssetPoolResult};
+    use traits::{FinanceAction, FinanceTrait};
 
     #[ink(event)]
     pub struct Transfer {
@@ -99,23 +100,25 @@ pub mod assetpool {
         }
 
         #[ink(message)]
-        pub fn borrow_to(&mut self, amount: u128, to: AccountId) -> AssetPoolResult {
-            if self.env().caller() != self.data.manager {
-                return Err(AssetPoolError::Unauthorized)
-            }
+        pub fn borrow(&mut self, amount: u128) -> AssetPoolResult {
             self.data.total_borrowed += amount;
-            psp22_transfer(self.data.token, to, amount)?;
+            let mut manager: contract_ref!(FinanceTrait) = self.data.manager.into();
+
+            manager.update(FinanceAction::Borrow, self.env().caller(), self.data.token, amount, vec![]);
+
+            psp22_transfer(self.data.token, self.env().caller(), amount)?;
 
             Ok(())
         }
 
         #[ink(message)]
-        pub fn repay_from(&mut self, amount: u128, from: AccountId) -> AssetPoolResult {
-            if self.env().caller() != self.data.manager {
-                return Err(AssetPoolError::Unauthorized)
-            }
+        pub fn repay(&mut self, amount: u128) -> AssetPoolResult {
             self.data.total_borrowed -= amount;
-            psp22_transfer_from(self.data.token, from, self.env().account_id(), amount)?;
+            let mut manager: contract_ref!(FinanceTrait) = self.data.manager.into();
+
+            manager.update(FinanceAction::Repay, self.env().caller(), self.data.token, amount, vec![]); // ??
+
+            psp22_transfer_from(self.data.token, self.env().caller(), self.env().account_id(), amount)?;
 
             Ok(())
         }

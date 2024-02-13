@@ -8,7 +8,7 @@ pub mod finance {
     use ink::storage::Mapping;
     use primitive_types::{U128, U256};
     use traits::errors::FinanceError;
-    use traits::FinanceTrait;
+    use traits::{FinanceAction, FinanceTrait};
     use ink::prelude::vec::Vec;
     
 
@@ -1340,20 +1340,19 @@ pub mod finance {
     }
     impl FinanceTrait for Finance {
         #[ink(message)]
-        fn update(&mut self, action: u8, user: AccountId, token: AccountId, amount: u128, tokens: Vec<AccountId>) -> Result<(), FinanceError> {
+        fn update(&mut self, action: FinanceAction, user: AccountId, token: AccountId, amount: u128, tokens: Vec<AccountId>) -> Result<(), FinanceError> {
             for t in tokens {
                 if let Some(price) = self.oracle_prices.get(&t) {
                     self.update_price(user, t, price)?;
                 }   
             }
             match action {
-                0 => self.deposit(user, token, amount),
-                1 => self.withdraw(user, token, amount),
-                2 => self.invest(user, token, amount),
-                3 => self.redeposit(user, token, amount),
-                4 => self.borrow(user, token, amount),
-                5 => self.redeem(user, token, amount),
-                _ => Err(FinanceError::InvalidAction)
+                FinanceAction::Deposit => self.deposit(user, token, amount),
+                FinanceAction::Withdraw => self.withdraw(user, token, amount),
+                FinanceAction::Invest => self.invest(user, token, amount),
+                FinanceAction::Redeposit => self.redeposit(user, token, amount),
+                FinanceAction::Borrow => self.borrow(user, token, amount),
+                FinanceAction::Redeem => self.redeem(user, token, amount),
             }
         }
 
