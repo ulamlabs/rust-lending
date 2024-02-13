@@ -68,7 +68,7 @@ pub mod finance {
     struct SupportedToken(AccountId);
     struct WithdrawOnlyToken(AccountId);
     struct RedepositOnlyToken(AccountId);
-    struct RedeemOnlyToken(AccountId);
+    struct RepayOnlyToken(AccountId);
 
     trait Token {
         fn id(&self) -> AccountId;
@@ -88,7 +88,7 @@ pub mod finance {
             self.0
         }
     }
-    impl Token for RedeemOnlyToken {
+    impl Token for RepayOnlyToken {
         fn id(&self) -> AccountId {
             self.0
         }
@@ -104,7 +104,7 @@ pub mod finance {
     
     impl DeprecatedToken for RedepositOnlyToken {}
     impl DeprecatedToken for WithdrawOnlyToken {}
-    impl DeprecatedToken for RedeemOnlyToken {}
+    impl DeprecatedToken for RepayOnlyToken {}
     trait ActiveToken: Token {}
     impl ActiveToken for EnabledToken {}
     impl ActiveToken for RedepositOnlyToken {}
@@ -197,8 +197,8 @@ pub mod finance {
             RedepositOnlyToken(token)
         }
 
-        fn redeem_only_token(&self, token: AccountId) -> RedeemOnlyToken {
-            RedeemOnlyToken(token)
+        fn repay_only_token(&self, token: AccountId) -> RepayOnlyToken {
+            RepayOnlyToken(token)
         }
 
         fn new_token_balance_after_deposit(&self, token: &impl ActiveToken, amount: u128) -> Result<NewTokenBalance, FinanceError> {
@@ -541,15 +541,15 @@ pub mod finance {
             }
         }
 
-        fn new_user_total_borrowed_after_redeem(&self, user: &User, amount: u128) -> Result<NewUserTotalBorrowed, FinanceError> {
+        fn new_user_total_borrowed_after_repay(&self, user: &User, amount: u128) -> Result<NewUserTotalBorrowed, FinanceError> {
             if let Some(user_total_borrowed) = self.user_total_borrowed.get(user.0) {
                 if let Some(new_user_total_borrowed) = user_total_borrowed.checked_sub(amount) {
                     Ok(NewUserTotalBorrowed(new_user_total_borrowed))
                 } else {
-                    Err(FinanceError::RedeemTooMuchForUserTotal)
+                    Err(FinanceError::RepayTooMuchForUserTotal)
                 }
             } else {
-                Err(FinanceError::NothingToRedeemForUserTotal)
+                Err(FinanceError::NothingToRepayForUserTotal)
             }
         }
 
@@ -585,27 +585,27 @@ pub mod finance {
             }
         }
 
-        fn new_user_borrowed_after_redeem(&self, token: &impl DeprecatedToken, user: &User, amount: u128) -> Result<NewUserBorrowed, FinanceError> {
+        fn new_user_borrowed_after_repay(&self, token: &impl DeprecatedToken, user: &User, amount: u128) -> Result<NewUserBorrowed, FinanceError> {
             if let Some(user_borrowed) = self.get_user_borrowed(token, user) {
                 if let Some(new_user_borrowed) = user_borrowed.checked_sub(amount) {
                     Ok(NewUserBorrowed(new_user_borrowed, user_borrowed))
                 } else {
-                    Err(FinanceError::RedeemTooMuchForUser)
+                    Err(FinanceError::RepayTooMuchForUser)
                 }
             } else {
-                Err(FinanceError::NothingToRedeemForUser)
+                Err(FinanceError::NothingToRepayForUser)
             }
         }
 
-        fn new_token_borrowed_after_redeem(&self, token: &impl DeprecatedToken, amount: u128) -> Result<NewTokenBorrowed, FinanceError> {
+        fn new_token_borrowed_after_repay(&self, token: &impl DeprecatedToken, amount: u128) -> Result<NewTokenBorrowed, FinanceError> {
             if let Some(borrowed) = self.borrowed.get(token.id()) {
                 if let Some(new_borrowed) = borrowed.checked_sub(amount) {
                     Ok(NewTokenBorrowed(new_borrowed))
                 } else {
-                    Err(FinanceError::RedeemTooMuch)
+                    Err(FinanceError::RepayTooMuch)
                 }
             } else {
-                Err(FinanceError::NothingToRedeem)
+                Err(FinanceError::NothingToRepay)
             }
         }
 
@@ -1262,14 +1262,14 @@ pub mod finance {
             Ok(())
         }
         
-        fn redeem(&mut self, user: AccountId, token: AccountId, amount: u128) -> Result<(), FinanceError> {
-            let token = &self.redeem_only_token(token);
+        fn repay(&mut self, user: AccountId, token: AccountId, amount: u128) -> Result<(), FinanceError> {
+            let token = &self.repay_only_token(token);
             let user = &self.caller(user, token)?;
             let price = &self.up_to_date_price(token, user)?;
             
-            let new_borrowed = self.new_token_borrowed_after_redeem(token, amount)?;
-            let new_user_borrowed = self.new_user_borrowed_after_redeem(token, user, amount)?;
-            let new_user_total_borrowed = self.new_user_total_borrowed_after_redeem(user, amount)?;
+            let new_borrowed = self.new_token_borrowed_after_repay(token, amount)?;
+            let new_user_borrowed = self.new_user_borrowed_after_repay(token, user, amount)?;
+            let new_user_total_borrowed = self.new_user_total_borrowed_after_repay(user, amount)?;
             let new_user_total_borrowed_value = self.updated_user_total_borrowed(user, price, &new_user_borrowed)?;
             
             self.set_token_borrowed(token, new_borrowed);
@@ -1352,7 +1352,7 @@ pub mod finance {
                 FinanceAction::Invest => self.invest(user, token, amount),
                 FinanceAction::Redeposit => self.redeposit(user, token, amount),
                 FinanceAction::Borrow => self.borrow(user, token, amount),
-                FinanceAction::Redeem => self.redeem(user, token, amount),
+                FinanceAction::Repay => self.repay(user, token, amount),
             }
         }
 

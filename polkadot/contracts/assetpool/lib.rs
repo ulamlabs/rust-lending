@@ -1,14 +1,15 @@
 #![cfg_attr(not(feature = "std"), no_std, no_main)]
 
-mod errors;
 
 #[ink::contract]
 pub mod assetpool {
     use ink::{prelude::vec::Vec, storage_item, contract_ref};
     use psp22::{PSP22Data, PSP22Error, PSP22, PSP22Event};
     use primitive_types::U256;
-    use crate::errors::{AssetPoolError, AssetPoolResult};
+    use traits::errors::{ContractError, AssetPoolError};
     use traits::{FinanceAction, FinanceTrait};
+
+    type AssetPoolResult = Result<(), ContractError>;
 
     #[ink(event)]
     pub struct Transfer {
@@ -104,8 +105,7 @@ pub mod assetpool {
             self.data.total_borrowed += amount;
             let mut manager: contract_ref!(FinanceTrait) = self.data.manager.into();
 
-            manager.update(FinanceAction::Borrow, self.env().caller(), self.data.token, amount, vec![]);
-
+            manager.update(FinanceAction::Borrow, self.env().caller(), self.data.token, amount, vec![])?;
             psp22_transfer(self.data.token, self.env().caller(), amount)?;
 
             Ok(())
@@ -115,10 +115,9 @@ pub mod assetpool {
         pub fn repay(&mut self, amount: u128) -> AssetPoolResult {
             self.data.total_borrowed -= amount;
             let mut manager: contract_ref!(FinanceTrait) = self.data.manager.into();
-
-            manager.update(FinanceAction::Repay, self.env().caller(), self.data.token, amount, vec![]); // ??
-
             psp22_transfer_from(self.data.token, self.env().caller(), self.env().account_id(), amount)?;
+
+            manager.update(FinanceAction::Repay, self.env().caller(), self.data.token, amount, vec![])?;
 
             Ok(())
         }

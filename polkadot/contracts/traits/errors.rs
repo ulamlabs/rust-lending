@@ -1,3 +1,5 @@
+use psp22::PSP22Error;
+
 
 #[derive(Debug, PartialEq, Eq, scale::Encode, scale::Decode)]
 #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
@@ -23,13 +25,13 @@ pub enum FinanceError {
     UserTotalBalanceValueTooHigh,
     UserTotalInvestedValueTooHigh,
     UserTotalBorrowedValueTooHigh,
-    NothingToRedeem,
-    NothingToRedeemForUser,
-    NothingToRedeemForUserTotal,
+    NothingToRepay,
+    NothingToRepayForUser,
+    NothingToRepayForUserTotal,
     UserTotalBorrowedNegativeDeltaImpossible,
-    RedeemTooMuch,
-    RedeemTooMuchForUser,
-    RedeemTooMuchForUserTotal,
+    RepayTooMuch,
+    RepayTooMuchForUser,
+    RepayTooMuchForUserTotal,
     BorrowOverflow,
     UserBorrowOverflow,
     UserBorrowTotalOverflow,
@@ -94,4 +96,38 @@ pub enum FinanceError {
 
     #[cfg(any(feature = "std", test, doc))]
     Test(String)
+}
+
+#[derive(Debug, PartialEq, Eq, scale::Encode, scale::Decode)]
+#[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
+pub enum AssetPoolError {
+    /// RatioCalculationError due to overflow or zero division
+    RatioCalculationError,
+}
+
+
+#[derive(Debug, PartialEq, Eq, scale::Encode, scale::Decode)]
+#[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
+pub enum ContractError {
+    AssetPoolError(AssetPoolError),
+    FinanceError(FinanceError),
+    PSP22Error(PSP22Error),
+}
+
+impl From<AssetPoolError> for ContractError {
+    fn from(err: AssetPoolError) -> Self {
+        ContractError::AssetPoolError(err)
+    }
+}
+
+impl From<FinanceError> for ContractError {
+    fn from(err: FinanceError) -> Self {
+        ContractError::FinanceError(err)
+    }
+}
+
+impl From<PSP22Error> for ContractError {
+    fn from(err: PSP22Error) -> Self {
+        ContractError::PSP22Error(err)
+    }
 }

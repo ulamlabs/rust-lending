@@ -4,7 +4,7 @@ pub mod errors;
 
 use ink::primitives::AccountId;
 use ink::prelude::vec::Vec;
-use errors::FinanceError;
+pub use errors::FinanceError;
 
 #[derive(scale::Encode, scale::Decode, scale_info::TypeInfo)]
 pub enum FinanceAction {
@@ -13,7 +13,7 @@ pub enum FinanceAction {
     Invest,
     Redeposit,
     Borrow,
-    Redeem
+    Repay
 }
 
 #[ink::trait_definition]
