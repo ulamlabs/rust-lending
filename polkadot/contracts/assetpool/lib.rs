@@ -6,7 +6,7 @@ mod errors;
 pub mod assetpool {
     use ink::{prelude::vec::Vec, storage_item, contract_ref};
     use psp22::{PSP22Data, PSP22Error, PSP22, PSP22Event};
-    use primitive_types::U256;
+    use primitive_types::{U128, U256};
     use crate::errors::{AssetPoolError, AssetPoolResult};
 
     #[ink(event)]
@@ -246,11 +246,11 @@ pub mod assetpool {
     // Math helpers
 
     fn ratio(m1: u128, m2: u128, d: u128) -> Result<u128, AssetPoolError>{
-        let m1w = U256::from(m1);
-        let m2w = U256::from(m2);
+        let m1w = U128::from(m1);
+        let m2w = U128::from(m2);
         let dw = U256::from(d);
 
-        let res = m1w * m2w / dw;
+        let res = m1w.full_mul(m2w).checked_div(dw).ok_or(AssetPoolError::RatioCalculationError)?;
         res.try_into().map_err(|_| AssetPoolError::RatioCalculationError)
     }
 
@@ -267,6 +267,7 @@ pub mod assetpool {
             assert_eq!(ratio(2, 1, 2), Ok(1));
             assert_eq!(ratio(1, 2, 2), Ok(1));
             assert_eq!(ratio(22, 4, 22), Ok(4));
+            assert_eq!(ratio(22, 4, 0), Err(AssetPoolError::RatioCalculationError));
         }
 
         #[test]
@@ -274,5 +275,4 @@ pub mod assetpool {
             assert_eq!(ratio(u128::MAX, u128::MAX, 1), Err(AssetPoolError::RatioCalculationError));
         }
     }
-
 }
