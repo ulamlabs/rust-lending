@@ -12,10 +12,8 @@ pub trait LAsset {
 
 #[ink::contract]
 mod finance2 {
-    use errors::LAssetError;
     #[cfg(not(test))]
     use ink::contract_ref;
-    use ink_e2e::subxt::rpc::types::NewBlock;
     use primitive_types::{U128, U256};
 
     
