@@ -7,4 +7,5 @@ pub enum LAssetError {
     BurnOverflow,
     BurnTooMuch,
     BorrowOverflow,
+    RepayOverflow,
 }

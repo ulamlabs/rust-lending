@@ -313,11 +313,10 @@ mod finance2 {
                 0
             } else {
                 //total_shares is not zero
-                //total_liquidity <= total_shares, because
-                //liquidity is defined as sum of all shares plus interest
+                //amount <= total_shares
                 ratio(amount, total_liquidity, total_shares)
                 //amount divided by total_shares is ratio <= 1
-                //if we multiply it by total_liquidity, we will get number of liquidity
+                //if we multiply it by total_liquidity, we will get liquidity to withdraw
 
                 //The case, when new_total_shares is zero, is handled in else branch
                 //We don't need to handle it in any special way
@@ -395,6 +394,60 @@ mod finance2 {
             
             //it is crucial to update those three variables together
             self.total_borrowable = new_borrowable;
+            self.total_borrow_shares = new_total_shares;
+            self.borrow_shares.insert(caller, &new_shares);
+
+            Ok(())
+        }
+
+        #[ink(message)]
+        pub fn repay(&mut self, amount: u128) -> Result<(), LAssetError> {
+            let env = self.env();
+            //You can repay for yourself only
+            let caller = env.caller();
+
+            let total_liqquidity = self.total_liquidity;
+            let borrowable = self.total_borrowable;
+            let total_shares = self.total_borrow_shares;
+            //Repay without borrow is useless, but not forbidden
+            let shares = self.borrow_shares.get(&caller).unwrap_or(0);
+
+            let new_shares = {
+                //new_shares is calculated first, because if it doesn't overflow,
+                //it is impossible for new_total_shares to overflow
+                let r = shares.checked_sub(amount);
+
+                //This check is potential blocker, but it can fail only if
+                //caller tries to repay more than she has borrowed
+                r.ok_or(LAssetError::RepayOverflow)
+            }?;
+
+            //impossible to overflow IF total_liquidity and borrowable are tracked correctly
+            let total_debt = total_liqquidity - borrowable;
+            
+            //Number of repayed liquidity is reduced by division precision
+            //It is not wanted, because it would lead to situation, when
+            //caller could burn some borrow shares without repaying any debt
+            //ceiling is solving that problem
+            let repayed = if total_shares == 0 {
+                0
+            } else {
+                //total_shares is not zero
+                //amount <= total_shares
+                ratio_up(amount, total_debt, total_shares)
+
+                //amount divided by total_shares is ratio <= 1
+                //if we multiply it by total_debt, we will get debt to repay
+
+                //The case, when new_total_shares is zero, is handled in else branch
+                //We don't need to handle it in any special way
+            };
+
+            let new_total_borrowable = borrowable + repayed;
+            let new_total_shares = total_shares - amount;
+
+            //it is crucial to update those three variables together
+            self.total_borrowable = new_total_borrowable;
             self.total_borrow_shares = new_total_shares;
             self.borrow_shares.insert(caller, &new_shares);
 
