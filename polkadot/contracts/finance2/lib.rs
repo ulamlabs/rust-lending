@@ -7,7 +7,7 @@ mod errors;
 #[ink::trait_definition]
 pub trait LAsset {
     #[ink(message)]
-    fn update(&mut self, user: AccountId) -> AccountId;
+    fn update(&mut self, user: AccountId) -> (AccountId, u128, u128);
 }
 
 #[ink::contract]
@@ -162,7 +162,6 @@ mod finance2 {
             initial_haircut: u128,
             maintenance_haircut: u128,
             price: u128,
-            price_scaler: u128,
         ) -> Self {
             Self { 
                 admin,
@@ -187,38 +186,49 @@ mod finance2 {
                 initial_haircut,
                 maintenance_haircut,
                 price,
-                price_scaler,
+                price_scaler: 1,
              }
         }
 
         #[cfg(not(test))]
-        fn update_next(&self, next: &AccountId) -> AccountId {
-            let mut next: contract_ref!(LAsset) = next.into();
-            next.update()
+        fn update_next(&self, next: &AccountId, user: &AccountId) -> (AccountId, u128, u128) {
+            let mut next: contract_ref!(LAsset) = (*next).into();
+            next.update(user.clone())
         }
 
         #[cfg(test)]
-        fn update_next(&self, next: &AccountId) -> AccountId {
+        fn update_next(&self, next: &AccountId, user: &AccountId) -> (AccountId, u128, u128) {
             unsafe {
                 if *next == AccountId::from([0x1; 32]) {
-                    return L_BTC.as_mut().unwrap().update();
+                    return L_BTC.as_mut().unwrap().update(user.clone());
                 }
                 if *next == AccountId::from([0x2; 32]) {
-                    return L_USDC.as_mut().unwrap().update();
+                    return L_USDC.as_mut().unwrap().update(user.clone());
                 }
                 if *next == AccountId::from([0x3; 32]) {
-                    return L_ETH.as_mut().unwrap().update();
+                    return L_ETH.as_mut().unwrap().update(user.clone());
                 }
                 unreachable!();
             }
         }
 
-        //this function should never fail
-        //In the worst case, a failure can block user funds forever
-        //To achieve it, some saturation arithmetic will be used
-        fn update_values(&mut self, mut next: AccountId, current: &AccountId) {
+        fn update_values(&mut self, 
+            mut next: AccountId, 
+            current: &AccountId, 
+            user: &AccountId,
+        ) -> Result<(), LAssetError> {
+            let mut total_collateral_value = 0 as u128;
+            let mut total_debt_value = 0 as u128;
             while next != *current {
-                next = self.update_next(&next);
+                let (next2, collateral_value, debt_value) = self.update_next(&next, user);
+                next = next2;
+                total_collateral_value = total_collateral_value.saturating_add(collateral_value);
+                total_debt_value = total_debt_value.saturating_add(debt_value);
+            }
+            if total_collateral_value > total_debt_value {
+                Ok(())
+            } else {
+                Err(LAssetError::CollateralValueTooLow)
             }
         }
 
@@ -253,7 +263,11 @@ mod finance2 {
             total_liquidity.saturating_add(interest)
         }
 
-        fn calculate_values(&self, user: &AccountId) -> (u128, u128, u128) {
+        fn calculate_values(&self, 
+            user: &AccountId,
+            now: Timestamp,
+            updated_at: Timestamp,
+        ) -> (u128, u128, u128) {
             let price = self.price;
             let price_scaler = self.price_scaler;
 
@@ -265,13 +279,10 @@ mod finance2 {
             let total_debt = total_liquidity - total_borrowable;
             let borrow_shares = self.borrow_shares.get(user).unwrap_or(0);
             let total_borrow_shares = self.total_borrow_shares;
-            let borrowed = ratio_up(borrow_shares, total_debt, total_borrow_shares);
-            let borrow_value = ratio_upsat(borrowed, price, price_scaler);
+            let debt = ratio_up(borrow_shares, total_debt, total_borrow_shares);
+            let debt_value = ratio_upsat(debt, price, price_scaler);
             
-            let now = self.env().block_timestamp();
-            let updated_at = self.updated_at;
-
-            let new_liquidity = if now <= updated_at || total_liquidity == 0 {
+            let new_liquidity = if total_liquidity == 0 {
                 0
             } else {
                 self.increase_liquidity(
@@ -282,8 +293,17 @@ mod finance2 {
                     total_debt,
                 )
             };
-            (collateral_value, borrow_value, new_liquidity)
+            (collateral_value, debt_value, new_liquidity)
         } 
+
+        fn get_now(&self, updated_at: Timestamp) -> Timestamp {
+            let now = self.env().block_timestamp();
+            if now < updated_at {
+                updated_at
+            } else {
+                now
+            }
+        }
         
 
         //There function does not require anythin
@@ -350,7 +370,7 @@ mod finance2 {
             let new_total_collateral = total_collateral - amount;
 
             //Until that point, no side effects are emitted
-            self.update_values(next, &current);
+            self.update_values(next, &current, &caller)?;
 
             //it is crucial to update those two variables together
             self.total_collateral = new_total_collateral;
@@ -588,13 +608,22 @@ mod finance2 {
 
     impl LAsset for LAssetContract {
         #[ink(message)]
-        fn update(&mut self, user: AccountId) -> AccountId {
-            
+        fn update(&mut self, user: AccountId) -> (AccountId, u128, u128) {
+            let updated_at = self.updated_at;
+            let now = self.get_now(updated_at);
+            let next = self.next;
+            let haircut = self.initial_haircut;
+            let margin = self.initial_margin;
+
+            let (collateral, debt, new_liquidity) = self.calculate_values(&user, now, updated_at);
+            let collateral_value = scale(collateral, haircut);
+            let debt_delta = scale(debt, margin);
+            let debt_value = debt.saturating_add(debt_delta);
 
             self.updated_at = now;
             self.total_liquidity = new_liquidity;
 
-            self.next
+            (next, collateral_value, debt_value)
         }
     }
 
@@ -628,7 +657,6 @@ mod finance2 {
                     0,
                     0,
                     0,
-                    1,
                 ));
                 L_USDC = Some(LAssetContract::new(
                     admin,
@@ -644,7 +672,6 @@ mod finance2 {
                     0,
                     0,
                     0,
-                    1,
                 ));
                 L_ETH = Some(LAssetContract::new(
                     admin,
@@ -660,7 +687,6 @@ mod finance2 {
                     0,
                     0,
                     0,
-                    1,
                 ));
             }
             unsafe {

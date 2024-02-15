@@ -8,4 +8,5 @@ pub enum LAssetError {
     BurnTooMuch,
     BorrowOverflow,
     RepayOverflow,
+    CollateralValueTooLow,
 }
