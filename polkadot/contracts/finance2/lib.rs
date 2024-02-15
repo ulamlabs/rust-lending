@@ -280,7 +280,7 @@ mod finance2 {
             let emergency_scaled = ratio_up(emergency_matured, total_borrowable, total_liquidity);            
     
             let standard_final = standard_scaled.saturating_add(standard_min_rate);
-            let emergency_final = emergency_scaled.saturating_sub(emergency_max_rate);
+            let emergency_final = emergency_max_rate.saturating_sub(emergency_scaled);
     
             let interest_rate = standard_final.max(emergency_final);
             let interest = scale_up(total_debt, interest_rate);
