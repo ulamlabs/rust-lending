@@ -16,6 +16,11 @@ mod finance2 {
     use ink::contract_ref;
     use primitive_types::{U128, U256};
 
+    //this is equivalent to a * b / 2^128
+    fn scale(a: u128, scaler: u128) -> u128 {
+        let result = U128::from(a).full_mul(U128::from(scaler));
+        (result >> 128).low_u128()
+    }
     
     //this function assumes c is not zero or a <= c or b <= c
     fn ratio(a: u128, b: u128, c: u128) -> u128 {
@@ -147,27 +152,71 @@ mod finance2 {
         }
 
         #[cfg(not(test))]
-        fn update_next(&self) -> AccountId {
-            let mut next: contract_ref!(LAsset) = self.next.into();
+        fn update_next(&self, next: &AccountId) -> AccountId {
+            let mut next: contract_ref!(LAsset) = next.into();
             next.update()
         }
 
         #[cfg(test)]
-        fn update_next(&self) -> AccountId {
+        fn update_next(&self, next: &AccountId) -> AccountId {
             unsafe {
-                if self.next == AccountId::from([0x1; 32]) {
+                if *next == AccountId::from([0x1; 32]) {
                     return L_BTC.as_mut().unwrap().update();
                 }
-                if self.next == AccountId::from([0x2; 32]) {
+                if *next == AccountId::from([0x2; 32]) {
                     return L_USDC.as_mut().unwrap().update();
                 }
-                if self.next == AccountId::from([0x3; 32]) {
+                if *next == AccountId::from([0x3; 32]) {
                     return L_ETH.as_mut().unwrap().update();
                 }
                 unreachable!();
             }
         }
 
+        //this function should never fail
+        //In the worst case, a failure can block user funds forever
+        //To achieve it, some saturation arithmetic will be used
+        fn update_values(&mut self, mut next: AccountId, current: &AccountId) {
+            while next != *current {
+                next = self.update_next(&next);
+            }
+        }
+
+        fn update_value(&mut self, 
+            now: Timestamp, 
+            updated_at: Timestamp,
+            standard_rate: u128,
+            standard_min_rate: u128,
+            emergency_rate: u128,
+            emergency_min_rate: u128,
+        ) -> () {
+            //We can return early if update was just performed
+            //This branch is needed anyway to handle the case when time goes backwards
+            //So we do not add any overhead
+            if now <= updated_at {
+                
+            } else {
+                //impossible to overflow, because now > updated_at
+                let delta = (now - updated_at) as u128;
+
+                let standard_delta = scale(standard_rate, delta);
+                let emergency_delta = scale(emergency_rate, delta);
+
+                let standard = {
+                    let r = standard_rate.checked_add(standard_delta);
+                    
+                    //We could emit event if standard_rate saturates, but
+                    //It would be really hard not to see it
+                    r.unwrap_or(u128::MAX)
+                };
+
+                // let emergency = 
+
+            }
+        }
+
+        //There function does not require anythin
+        //Depositing collateral is absolutely independent
         #[ink(message)]
         pub fn deposit(&mut self, amount: u128) -> Result<(), LAssetError> {
             let env = self.env();
@@ -198,11 +247,19 @@ mod finance2 {
             Ok(())
         }
 
+        //This function is very dangerous, because collateral is the only thing
+        //That keep borrower from running away with borrowed liquidity
+        //It is crucial to check if collateral value is greater than value of borrowed liquidity
         #[ink(message)]
         pub fn withdraw(&mut self, amount: u128) -> Result<(), LAssetError> {
-            let env = self.env();
             //You can withdraw for yourself only
-            let caller = env.caller();
+            let caller = self.env().caller();
+
+            //It will be needed to update values of other assets
+            let next = self.next;
+
+            //It is used to end recursion
+            let current = self.env().account_id();
 
             let total_collateral = self.total_collateral;
             //Withdraw without deposit is useless, but not forbidden
@@ -220,6 +277,9 @@ mod finance2 {
 
             //impossible to overflow IF total_collateral is tracked correctly
             let new_total_collateral = total_collateral - amount;
+
+            //Until that point, no side effects are emitted
+            self.update_values(next, &current);
 
             //it is crucial to update those two variables together
             self.total_collateral = new_total_collateral;
