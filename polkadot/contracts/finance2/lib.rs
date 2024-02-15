@@ -212,13 +212,18 @@ mod finance2 {
             }
         }
 
-        fn update_values(&mut self, 
+        fn update_values(&self, 
             mut next: AccountId, 
             current: &AccountId, 
             user: &AccountId,
-        ) -> Result<(), LAssetError> {
-            let mut total_collateral_value = 0 as u128;
-            let mut total_debt_value = 0 as u128;
+        ) -> Result<(Timestamp, u128), LAssetError> {
+            let updated_at = self.updated_at;
+            let now = self.get_now(updated_at);
+            let (collateral, debt, new_liquidity) = self.calculate_values(user, now, updated_at);
+            let (collateral_value, debt_value) = self.calculate_initial_values(collateral, debt);
+            
+            let mut total_collateral_value = collateral_value;
+            let mut total_debt_value = debt_value;
             while next != *current {
                 let (next2, collateral_value, debt_value) = self.update_next(&next, user);
                 next = next2;
@@ -226,7 +231,7 @@ mod finance2 {
                 total_debt_value = total_debt_value.saturating_add(debt_value);
             }
             if total_collateral_value > total_debt_value {
-                Ok(())
+                Ok((now, new_liquidity))
             } else {
                 Err(LAssetError::CollateralValueTooLow)
             }
@@ -295,6 +300,19 @@ mod finance2 {
             };
             (collateral_value, debt_value, new_liquidity)
         } 
+
+        fn calculate_initial_values(
+            &self,
+            collateral: u128,
+            debt: u128, 
+        ) -> (u128, u128) {
+            let margin = self.initial_margin;
+            let haircut = self.initial_haircut;
+            let collateral_value = scale(collateral, haircut);
+            let debt_delta = scale(debt, margin);
+            let debt_value = debt.saturating_add(debt_delta);
+            (collateral_value, debt_value)
+        }
 
         fn get_now(&self, updated_at: Timestamp) -> Timestamp {
             let now = self.env().block_timestamp();
@@ -370,11 +388,14 @@ mod finance2 {
             let new_total_collateral = total_collateral - amount;
 
             //Until that point, no side effects are emitted
-            self.update_values(next, &current, &caller)?;
+            let (now, new_liquidity) = self.update_values(next, &current, &caller)?;
 
             //it is crucial to update those two variables together
             self.total_collateral = new_total_collateral;
             self.collaterals.insert(caller, &new_collateral);
+
+            self.updated_at = now;
+            self.total_liquidity = new_liquidity;
             Ok(())
         }
 
@@ -612,13 +633,9 @@ mod finance2 {
             let updated_at = self.updated_at;
             let now = self.get_now(updated_at);
             let next = self.next;
-            let haircut = self.initial_haircut;
-            let margin = self.initial_margin;
-
+            
             let (collateral, debt, new_liquidity) = self.calculate_values(&user, now, updated_at);
-            let collateral_value = scale(collateral, haircut);
-            let debt_delta = scale(debt, margin);
-            let debt_value = debt.saturating_add(debt_delta);
+            let (collateral_value, debt_value) = self.calculate_initial_values(collateral, debt);
 
             self.updated_at = now;
             self.total_liquidity = new_liquidity;
