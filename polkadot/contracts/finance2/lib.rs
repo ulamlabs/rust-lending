@@ -18,11 +18,32 @@ mod finance2 {
 
     
     //this function assumes c is not zero or a <= c or b <= c
-    pub fn ratio(a: u128, b: u128, c: u128) -> u128 {
+    fn ratio(a: u128, b: u128, c: u128) -> u128 {
         let denominator = U128::from(a).full_mul(U128::from(b));
         let result = denominator / U256::from(c);
         result.low_u128()
     }
+    //this function assumes c is not zero or a <= c or b <= c
+    fn ratio_up(a: u128, b: u128, c: u128) -> u128 {
+        let denominator = U128::from(a).full_mul(U128::from(b));
+
+        //We use div_mod here, to decide if we should round up or down
+        let (result, rem) = denominator.div_mod(U256::from(c));
+
+        //Addition here never overflows, because it could happen only if rem is not zero
+        //And if rem is not zero, it means that result is less than 2^128-1
+        //Proved using z3:
+        //>> z3.solve(
+            //a >= 0, b >= 0, c > 0, 
+            //a < 2**128, b < 2**128, c < 2**128, 
+            //z3.Or(a <= c, b <= c), 
+            // a*b/c + z3.If(a*b%c != 0, 1, 0) >= 2**128
+        //)
+        //no solution
+        result.low_u128() + !rem.is_zero() as u128
+    }
+
+
 
     use ink::storage::Mapping;
     use crate::{errors::LAssetError, LAsset};
@@ -319,6 +340,63 @@ mod finance2 {
                 //And should soon lead to liquidation
                 r.ok_or(LAssetError::BurnTooMuch)
             }?;
+
+            //it is crucial to update those four variables together
+            self.total_liquidity = new_total_liquidity;
+            self.total_liquidity_shares = new_total_shares;
+            self.liquidity_shares.insert(caller, &new_shares);
+            self.total_borrowable = new_total_borrowable;
+
+            Ok(())
+        }
+
+        //In this function amount is amount of liquidity, not shares
+        #[ink(message)]
+        pub fn borrow(&mut self, amount: u128) -> Result<(), LAssetError> {
+            let env = self.env();
+            //You can borrow for yourself only
+            let caller = env.caller();
+
+            let total_liqquidity = self.total_liquidity;
+            let borrowable = self.total_borrowable;
+            let total_shares = self.total_borrow_shares;
+            //First borrow does not require any extra actions
+            let shares = self.borrow_shares.get(&caller).unwrap_or(0);
+
+            let new_borrowable = {
+                //new_borrowable is calculated first, because if it doesn't overflow,
+                //it is impossible for new_shares and new_total_shares to overflow
+                let r = borrowable.checked_sub(amount);
+
+                //This check is potential blocker, but it can fail only if
+                //caller tries to borrow more than it is possible
+                r.ok_or(LAssetError::BorrowOverflow)
+            }?;
+
+            //impossible to overflow IF total_liquidity and borrowable are tracked correctly
+            let total_debt = total_liqquidity - borrowable;
+
+            //Number of borrowed shares would be reduced by division precision
+            //It is not wanted, because it would lead to situation, when
+            //caller could borrow some liquidity without minting any shares
+            //ceiling is solving that problem
+            let minted = if total_debt == 0 {
+                amount
+            } else {
+                //total_debt is not zero
+                //total_shares <= total_debt, because
+                //debt is defined as sum of all shares and interest
+                ratio_up(amount, total_shares, total_debt)
+                //amount divided by total_debt is ratio <= 1
+                //if we multiply it by total_shares, we will get number of shares
+            };
+            let new_shares = shares + minted;
+            let new_total_shares = total_shares + minted;
+            
+            //it is crucial to update those three variables together
+            self.total_borrowable = new_borrowable;
+            self.total_borrow_shares = new_total_shares;
+            self.borrow_shares.insert(caller, &new_shares);
 
             Ok(())
         }
