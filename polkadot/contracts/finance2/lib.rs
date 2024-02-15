@@ -7,7 +7,7 @@ mod errors;
 #[ink::trait_definition]
 pub trait LAsset {
     #[ink(message)]
-    fn update(&mut self) -> AccountId;
+    fn update(&mut self, user: AccountId) -> AccountId;
 }
 
 #[ink::contract]
@@ -16,17 +16,35 @@ mod finance2 {
     use ink::contract_ref;
     use primitive_types::{U128, U256};
 
-    //this is equivalent to a * b / 2^128
     fn scale(a: u128, scaler: u128) -> u128 {
         let result = U128::from(a).full_mul(U128::from(scaler));
         (result >> 128).low_u128()
     }
+
+    //this is equivalent to a * b / 2^128
+    fn scale_up(a: u128, scaler: u128) -> u128 {
+        let result = U128::from(a).full_mul(U128::from(scaler));
+        let x = (result >> 128).low_u128();
+        let y = (result.low_u128() != 0) as u128;
+        x + y
+    }
+
+    
     
     //this function assumes c is not zero or a <= c or b <= c
     fn ratio(a: u128, b: u128, c: u128) -> u128 {
         let denominator = U128::from(a).full_mul(U128::from(b));
         let result = denominator / U256::from(c);
         result.low_u128()
+    }
+    fn ratio_sat(a: u128, b: u128, c: u128) -> u128 {
+        let denominator = U128::from(a).full_mul(U128::from(b));
+        let result = denominator / U256::from(c);
+        if result.bits() > 128 {
+            u128::MAX
+        } else {
+            result.low_u128()
+        }
     }
     //this function assumes c is not zero or a <= c or b <= c
     fn ratio_up(a: u128, b: u128, c: u128) -> u128 {
@@ -46,6 +64,28 @@ mod finance2 {
         //)
         //no solution
         result.low_u128() + !rem.is_zero() as u128
+    }
+    fn ratio_upsat(a: u128, b: u128, c: u128) -> u128 {
+        let denominator = U128::from(a).full_mul(U128::from(b));
+
+        //We use div_mod here, to decide if we should round up or down
+        let (result, rem) = denominator.div_mod(U256::from(c));
+
+        //Addition here never overflows, because it could happen only if rem is not zero
+        //And if rem is not zero, it means that result is less than 2^128-1
+        //Proved using z3:
+        //>> z3.solve(
+            //a >= 0, b >= 0, c > 0, 
+            //a < 2**128, b < 2**128, c < 2**128, 
+            //z3.Or(a <= c, b <= c), 
+            // a*b/c + z3.If(a*b%c != 0, 1, 0) >= 2**128
+        //)
+        //no solution
+        if result.bits() > 128 {
+            u128::MAX
+        } else {
+            result.low_u128() + !rem.is_zero() as u128
+        }
     }
 
 
@@ -182,38 +222,69 @@ mod finance2 {
             }
         }
 
-        fn update_value(&mut self, 
+        fn increase_liquidity(
+            &self,
             now: Timestamp, 
             updated_at: Timestamp,
-            standard_rate: u128,
-            standard_min_rate: u128,
-            emergency_rate: u128,
-            emergency_min_rate: u128,
-        ) -> () {
-            //We can return early if update was just performed
-            //This branch is needed anyway to handle the case when time goes backwards
-            //So we do not add any overhead
-            if now <= updated_at {
-                
-            } else {
-                //impossible to overflow, because now > updated_at
-                let delta = (now - updated_at) as u128;
-
-                let standard_delta = scale(standard_rate, delta);
-                let emergency_delta = scale(emergency_rate, delta);
-
-                let standard = {
-                    let r = standard_rate.checked_add(standard_delta);
-                    
-                    //We could emit event if standard_rate saturates, but
-                    //It would be really hard not to see it
-                    r.unwrap_or(u128::MAX)
-                };
-
-                // let emergency = 
-
-            }
+            total_liquidity: u128,
+            total_borrowable: u128,
+            total_debt: u128,
+        ) -> u128 {
+            let standard_rate = self.standard_rate;
+            let standard_min_rate = self.standard_min_rate;
+            let emergency_rate = self.emergency_rate;
+            let emergency_max_rate = self.emergency_max_rate;
+    
+            //impossible to overflow, because now > updated_at
+            let delta = (now - updated_at) as u128;
+    
+            let standard_matured = standard_rate.saturating_mul(delta);
+            let emergency_matured = emergency_rate.saturating_mul(delta);
+    
+            let standard_scaled = ratio_up(standard_matured, total_debt, total_liquidity);
+            let emergency_scaled = ratio_up(emergency_matured, total_borrowable, total_liquidity);            
+    
+            let standard_final = standard_scaled.saturating_add(standard_min_rate);
+            let emergency_final = emergency_scaled.saturating_sub(emergency_max_rate);
+    
+            let interest_rate = standard_final.max(emergency_final);
+            let interest = scale_up(total_debt, interest_rate);
+    
+            total_liquidity.saturating_add(interest)
         }
+
+        fn calculate_values(&self, user: &AccountId) -> (u128, u128, u128) {
+            let price = self.price;
+            let price_scaler = self.price_scaler;
+
+            let collateral = self.collaterals.get(user).unwrap_or(0);
+            let collateral_value = ratio_sat(collateral, price, price_scaler);
+
+            let total_liquidity = self.total_liquidity;
+            let total_borrowable = self.total_borrowable;
+            let total_debt = total_liquidity - total_borrowable;
+            let borrow_shares = self.borrow_shares.get(user).unwrap_or(0);
+            let total_borrow_shares = self.total_borrow_shares;
+            let borrowed = ratio_up(borrow_shares, total_debt, total_borrow_shares);
+            let borrow_value = ratio_upsat(borrowed, price, price_scaler);
+            
+            let now = self.env().block_timestamp();
+            let updated_at = self.updated_at;
+
+            let new_liquidity = if now <= updated_at || total_liquidity == 0 {
+                0
+            } else {
+                self.increase_liquidity(
+                    now, 
+                    updated_at,
+                    total_liquidity,
+                    total_borrowable,
+                    total_debt,
+                )
+            };
+            (collateral_value, borrow_value, new_liquidity)
+        } 
+        
 
         //There function does not require anythin
         //Depositing collateral is absolutely independent
@@ -517,7 +588,12 @@ mod finance2 {
 
     impl LAsset for LAssetContract {
         #[ink(message)]
-        fn update(&mut self) -> AccountId {
+        fn update(&mut self, user: AccountId) -> AccountId {
+            
+
+            self.updated_at = now;
+            self.total_liquidity = new_liquidity;
+
             self.next
         }
     }
