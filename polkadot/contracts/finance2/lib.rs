@@ -212,14 +212,34 @@ mod finance2 {
             }
         }
 
+        fn update_me(
+            &self,
+            total_borrowable: u128,
+        ) -> (Timestamp, u128) {
+            let updated_at = self.updated_at;
+            let now = self.get_now(updated_at);
+            let total_liquidity = self.total_liquidity;
+            let total_borrowable = self.total_borrowable;
+            let total_debt = total_liquidity - total_borrowable;
+            let new_liquidity = self.increase_liquidity(
+                now, 
+                updated_at,
+                total_liquidity,
+                total_borrowable,
+                total_debt,
+            );
+            (now, new_liquidity)
+        }
+
         fn update_values(&self, 
             mut next: AccountId, 
             current: &AccountId, 
             user: &AccountId,
+            user_collateral: u128,
         ) -> Result<(Timestamp, u128), LAssetError> {
             let updated_at = self.updated_at;
             let now = self.get_now(updated_at);
-            let (collateral, debt, new_liquidity) = self.calculate_values(user, now, updated_at);
+            let (collateral, debt, new_liquidity) = self.calculate_values(user, now, updated_at, user_collateral);
             let (collateral_value, debt_value) = self.calculate_initial_values(collateral, debt);
             
             let mut total_collateral_value = collateral_value;
@@ -272,11 +292,11 @@ mod finance2 {
             user: &AccountId,
             now: Timestamp,
             updated_at: Timestamp,
+            collateral: u128,
         ) -> (u128, u128, u128) {
             let price = self.price;
             let price_scaler = self.price_scaler;
 
-            let collateral = self.collaterals.get(user).unwrap_or(0);
             let collateral_value = ratio_sat(collateral, price, price_scaler);
 
             let total_liquidity = self.total_liquidity;
@@ -328,7 +348,7 @@ mod finance2 {
         }
         
 
-        //There function does not require anythin
+        //There function does not require anything
         //Depositing collateral is absolutely independent
         #[ink(message)]
         pub fn deposit(&mut self, amount: u128) -> Result<(), LAssetError> {
@@ -388,11 +408,11 @@ mod finance2 {
                 r.ok_or(LAssetError::WithdrawOverflow)
             }?;
 
+            let (now, new_liquidity) = self.update_values(next, &current, &caller, new_collateral)?;
+
             //impossible to overflow IF total_collateral is tracked correctly
             let new_total_collateral = total_collateral - amount;
 
-            //Until that point, no side effects are emitted
-            let (now, new_liquidity) = self.update_values(next, &current, &caller)?;
 
             //it is crucial to update those two variables together
             self.total_collateral = new_total_collateral;
@@ -411,8 +431,9 @@ mod finance2 {
             //You can mint for yourself only
             let caller = env.caller();
 
-            let total_borowable = self.total_borrowable;
-            let total_liquidity = self.total_liquidity;
+            let total_borrowable = self.total_borrowable;
+            let (now, total_liquidity) = self.update_me(total_borrowable);
+
             let total_shares = self.total_liquidity_shares;
             //First mint does not require any extra actions
             let shares = self.liquidity_shares.get(&caller).unwrap_or(0);
@@ -445,13 +466,15 @@ mod finance2 {
             //impossible to overflow IF total_liquidity is tracked correctly
             let new_shares = shares + minted;
             let new_total_shares = total_shares + minted;
-            let new_total_borrowable = total_borowable + amount;
+            let new_total_borrowable = total_borrowable + amount;
 
             //it is crucial to update those four variables together
             self.total_liquidity = new_total_liquidity;
             self.total_liquidity_shares = new_total_shares;
             self.liquidity_shares.insert(caller, &new_shares);
             self.total_borrowable = new_total_borrowable;
+
+            self.updated_at = now;
 
             Ok(())
         }
@@ -466,7 +489,8 @@ mod finance2 {
             let caller = env.caller();
 
             let total_borrowable = self.total_borrowable;
-            let total_liquidity = self.total_liquidity;
+            let (now, total_liquidity) = self.update_me(total_borrowable);
+
             let total_shares = self.total_liquidity_shares;
             //Burn without mint is useless, but not forbidden
             let shares = self.liquidity_shares.get(&caller).unwrap_or(0);
@@ -522,6 +546,8 @@ mod finance2 {
             self.liquidity_shares.insert(caller, &new_shares);
             self.total_borrowable = new_total_borrowable;
 
+            self.updated_at = now;
+
             Ok(())
         }
 
@@ -531,8 +557,13 @@ mod finance2 {
             let env = self.env();
             //You can borrow for yourself only
             let caller = env.caller();
-
-            let total_liqquidity = self.total_liquidity;
+            
+            let next = self.next;
+            let current = self.env().account_id();
+            
+            let user_collateral = self.collaterals.get(&caller).unwrap_or(0);
+            let (now, new_liquidity) = self.update_values(next, &current, &caller, user_collateral)?;
+            
             let borrowable = self.total_borrowable;
             let total_shares = self.total_borrow_shares;
             //First borrow does not require any extra actions
@@ -549,7 +580,7 @@ mod finance2 {
             }?;
 
             //impossible to overflow IF total_liquidity and borrowable are tracked correctly
-            let total_debt = total_liqquidity - borrowable;
+            let total_debt = new_liquidity - borrowable;
 
             //Number of borrowed shares would be reduced by division precision
             //It is not wanted, because it would lead to situation, when
@@ -573,6 +604,9 @@ mod finance2 {
             self.total_borrow_shares = new_total_shares;
             self.borrow_shares.insert(caller, &new_shares);
 
+            self.total_liquidity = new_liquidity;
+            self.updated_at = now;
+
             Ok(())
         }
 
@@ -582,8 +616,9 @@ mod finance2 {
             //You can repay for yourself only
             let caller = env.caller();
 
-            let total_liqquidity = self.total_liquidity;
             let borrowable = self.total_borrowable;
+            let (now, new_liquidity) = self.update_me(borrowable);
+
             let total_shares = self.total_borrow_shares;
             //Repay without borrow is useless, but not forbidden
             let shares = self.borrow_shares.get(&caller).unwrap_or(0);
@@ -599,7 +634,7 @@ mod finance2 {
             }?;
 
             //impossible to overflow IF total_liquidity and borrowable are tracked correctly
-            let total_debt = total_liqquidity - borrowable;
+            let total_debt = new_liquidity - borrowable;
             
             //Number of repayed liquidity is reduced by division precision
             //It is not wanted, because it would lead to situation, when
@@ -627,6 +662,9 @@ mod finance2 {
             self.total_borrow_shares = new_total_shares;
             self.borrow_shares.insert(caller, &new_shares);
 
+            self.total_liquidity = new_liquidity;
+            self.updated_at = now;
+
             Ok(())
         }
     }
@@ -637,8 +675,9 @@ mod finance2 {
             let updated_at = self.updated_at;
             let now = self.get_now(updated_at);
             let next = self.next;
+            let user_collateral = self.collaterals.get(&user).unwrap_or(0);
             
-            let (collateral, debt, new_liquidity) = self.calculate_values(&user, now, updated_at);
+            let (collateral, debt, new_liquidity) = self.calculate_values(&user, now, updated_at, user_collateral);
             let (collateral_value, debt_value) = self.calculate_initial_values(collateral, debt);
 
             self.updated_at = now;
