@@ -230,10 +230,10 @@ mod finance2 {
                 total_collateral_value = total_collateral_value.saturating_add(collateral_value);
                 total_debt_value = total_debt_value.saturating_add(debt_value);
             }
-            if total_collateral_value > total_debt_value {
-                Ok((now, new_liquidity))
-            } else {
+            if total_collateral_value < total_debt_value {
                 Err(LAssetError::CollateralValueTooLow)
+            } else {
+                Ok((now, new_liquidity))
             }
         }
 
@@ -284,8 +284,12 @@ mod finance2 {
             let total_debt = total_liquidity - total_borrowable;
             let borrow_shares = self.borrow_shares.get(user).unwrap_or(0);
             let total_borrow_shares = self.total_borrow_shares;
-            let debt = ratio_up(borrow_shares, total_debt, total_borrow_shares);
-            let debt_value = ratio_upsat(debt, price, price_scaler);
+            let debt_value = if total_borrow_shares == 0 {
+                0
+            } else {
+                let debt = ratio_up(borrow_shares, total_debt, total_borrow_shares);
+                ratio_upsat(debt, price, price_scaler)
+            };
             
             let new_liquidity = if total_liquidity == 0 {
                 0
