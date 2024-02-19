@@ -1,5 +1,6 @@
 [workspace]
-members = ["cosmos/contracts/*", "polkadot/contracts/*"]
+#members = ["cosmos/contracts/*", "polkadot/contracts/*"]
+members = ["polkadot/contracts/finance2", "polkadot/contracts/assetpool"]
 
 # Resolver has to be set explicitely in workspaces, see https://github.com/rust-lang/cargo/issues/9956
 resolver = "2"

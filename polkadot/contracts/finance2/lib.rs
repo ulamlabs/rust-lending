@@ -91,6 +91,7 @@ mod finance2 {
 
 
     use ink::storage::Mapping;
+    use psp22::{PSP22Error, PSP22Event, PSP22};
     use crate::{errors::LAssetError, LAsset};
 
     #[ink(storage)]
@@ -111,6 +112,7 @@ mod finance2 {
         total_liquidity_shares: u128,
         //Number of shares owned by each user
         liquidity_shares: Mapping<AccountId, u128>,
+        allowance: Mapping<(AccountId, AccountId), u128>,
         
         //Amount of liquidity that can be borrowed
         //It is better to store it in that way, because
@@ -174,6 +176,7 @@ mod finance2 {
                 total_liquidity: 0,
                 total_liquidity_shares: 0,
                 liquidity_shares: Mapping::new(),
+                allowance: Mapping::new(),
                 total_borrowable: 0,
                 total_borrow_shares: 0,
                 borrow_shares: Mapping::new(),
@@ -684,6 +687,110 @@ mod finance2 {
             self.total_liquidity = new_liquidity;
 
             (next, collateral_value, debt_value)
+        }
+    }
+
+    impl PSP22 for LAssetContract {
+        #[ink(message)]
+        fn total_supply(&self) -> u128 {
+            self.total_liquidity_shares
+        }
+
+        #[ink(message)]
+        fn balance_of(&self, owner: AccountId) -> u128 {
+            self.liquidity_shares.get(&owner).unwrap_or(0)
+        }
+
+        #[ink(message)]
+        fn allowance(&self, owner: AccountId, spender: AccountId) -> u128 {
+            self.allowance.get(&(owner, spender)).unwrap_or(0)
+        }
+
+        #[ink(message)]
+        fn transfer(&mut self, to: AccountId, value: u128, _data: Vec<u8>) -> Result<(), PSP22Error> {
+            let from = self.env().caller();
+            let from_shares = self.liquidity_shares.get(&from).unwrap_or(0);
+            let to_shares = self.liquidity_shares.get(&to).unwrap_or(0);
+
+            let new_from_shares = {
+                let r = from_shares.checked_sub(value);
+                r.ok_or(PSP22Error::InsufficientBalance)
+            }?;
+            let new_to_shares = to_shares + value;
+            let event = PSP22Event::Transfer(Some(from), Some(to), value);
+
+            self.liquidity_shares.insert(from, &new_from_shares);
+            self.liquidity_shares.insert(to, &new_to_shares);
+
+            self.env().emit_event(event);
+            Ok(())
+        }
+
+        #[ink(message)]
+        fn transfer_from(&mut self, from: AccountId, to: AccountId, value: u128, _data: Vec<u8>) -> Result<(), PSP22Error> {
+            let from_shares = self.liquidity_shares.get(&from).unwrap_or(0);
+            let to_shares = self.liquidity_shares.get(&to).unwrap_or(0);
+            let allowance = self.allowance.get(&(from, to)).unwrap_or(0);
+            
+            let new_allowance = {
+                let r = allowance.checked_sub(value);
+                r.ok_or(PSP22Error::InsufficientAllowance)
+            }?;
+            let new_from_shares = {
+                let r = from_shares.checked_sub(value);
+                r.ok_or(PSP22Error::InsufficientBalance)
+            }?;
+            let new_to_shares = to_shares + value;
+            let approval_event = PSP22Event::Approval(from, to, new_allowance);
+            let transfer_event = PSP22Event::Transfer(Some(from), Some(to), value);
+
+            self.liquidity_shares.insert(from, &new_from_shares);
+            self.liquidity_shares.insert(to, &new_to_shares);
+            self.allowance.insert((from, to), &new_allowance);
+
+            self.env().emit_event(approval_event);
+            self.env().emit_event(transfer_event);
+            Ok(())
+        }
+
+        #[ink(message)]
+        fn approve(&mut self, spender: AccountId, value: u128) -> Result<(), PSP22Error> {
+            let owner = self.env().caller();
+            
+            let event = PSP22Event::Approval(owner, spender, value);
+
+            self.allowance.insert((owner, spender), &value);
+            
+            self.env().emit_event(event);
+            Ok(())
+        }
+
+        #[ink(message)]
+        fn increase_allowance(&mut self, spender: AccountId, delta_value: u128) -> Result<(), PSP22Error> {
+            let owner = self.env().caller();
+            let allowance = self.allowance.get(&(owner, spender)).unwrap_or(0);
+            
+            let new_allowance = allowance.saturating_add(delta_value);
+            let event = PSP22Event::Approval(owner, spender, new_allowance);
+            
+            self.allowance.insert((owner, spender), &new_allowance);
+
+            self.env().emit_event(event);
+            Ok(())
+        }
+
+        #[ink(message)]
+        fn decrease_allowance(&mut self, spender: AccountId, delta_value: u128) -> Result<(), PSP22Error> {
+            let owner = self.env().caller();
+            let allowance = self.allowance.get(&(owner, spender)).unwrap_or(0);
+            
+            let new_allowance = allowance.saturating_sub(delta_value);
+            let event = PSP22Event::Approval(owner, spender, new_allowance);
+
+            self.allowance.insert((owner, spender), &new_allowance);
+
+            self.env().emit_event(event);
+            Ok(())
         }
     }
 
