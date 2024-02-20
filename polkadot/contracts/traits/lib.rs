@@ -26,4 +26,9 @@ pub trait FinanceTrait {
     fn update(&mut self, action: FinanceAction, user:AccountId, token: AccountId, amount: u128, tokens: Vec<AccountId>) -> Result<(), FinanceError>;
     #[ink(message)]
     fn set_price(&mut self, token: AccountId, price: u128) -> Result<(), FinanceError>;
+    /// Distribute yield to the asset pool contract, this only needs to happen if invested amount changes
+    /// Returns:
+    /// - Yield distributed in base units (as new debt)
+    #[ink(message)]
+    fn distribute_yield(&mut self, token: AccountId, delta_invested: i128) -> Result<u128, FinanceError>;
 }

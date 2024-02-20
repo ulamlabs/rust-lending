@@ -93,6 +93,8 @@ pub enum FinanceError {
     InterestOverflow,
     CalculatedInterestOverflowImpossible,
     NegativeInterestImpossible,
+    /// Generic lookup error, should not happen in practice
+    LookupError,
 
     #[cfg(any(feature = "std", test, doc))]
     Test(String)

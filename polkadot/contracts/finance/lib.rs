@@ -8,7 +8,7 @@ pub mod finance {
     use ink::storage::Mapping;
     use primitive_types::{U128, U256};
     use traits::errors::FinanceError;
-    use traits::{FinanceAction, FinanceTrait};
+    use traits::{FinanceAction, FinanceError, FinanceTrait};
     use ink::prelude::vec::Vec;
     
 
@@ -16,13 +16,18 @@ pub mod finance {
     pub struct Finance {
         admin: AccountId,
         oracle: AccountId,
+        /// Collateral
         balances: Mapping<AccountId, u128>,
         user_balances: Mapping<(AccountId, AccountId), u128>,
+        /// Total used for lending
         invested: Mapping<AccountId, u128>,
         user_invested: Mapping<(AccountId, AccountId), u128>,
+        /// Total borrowed amount
         borrowed: Mapping<AccountId, u128>,
         user_borrowed: Mapping<(AccountId, AccountId), u128>,
+        /// Whitelist of supported assets
         tokens: Mapping<AccountId, bool>,
+        /// Mapping of token to liquid yield bearing token
         token_addresses: Mapping<AccountId, AccountId>,
         prices: Mapping<AccountId, u128>,
         oracle_prices: Mapping<AccountId, u128>,
@@ -965,6 +970,22 @@ pub mod finance {
             }
         }
 
+        fn get_rate_raw(&self, token: &impl Token, delta_t: u64) -> Result<Rate, FinanceError> {
+            let invested = self.invested.get(token.id()).ok_or(FinanceError::LookupError)?;
+            let borrowed = self.borrowed.get(token.id()).ok_or(FinanceError::LookupError)?;
+            let standard_rate: U128 = self.standard_rates.get(token.id()).ok_or(FinanceError::LookupError)?.into();
+            // In case of division by zero, the scaled rate is 0
+            let scaled_rate: u128 = standard_rate
+                .full_mul(invested.into())
+                .checked_div(borrowed.into())
+                .unwrap_or(U256::zero())
+                .try_into()?;
+
+            let accumulated_rate = scaled_rate.checked_mul(time_delta.into()).unwrap_or(FinanceError::AccumulatedRateOverflow)?;
+
+            Ok(Rate(accumulated_rate))
+        }
+
         fn new_borrowed_with_interest(&self, token: &impl Token, rate: &Option<Rate>) -> Result<(NewTokenBorrowed, BorrowInterest, OldTokenBorrowed), FinanceError> {
             let borrowed = if let Some(borrowed) = self.borrowed.get(token.id()) {
                 borrowed
@@ -1380,6 +1401,29 @@ pub mod finance {
 
             self.set_oracle_price(token, price, oracle);
             Ok(())
+        }
+
+        #[ink(message)]
+        fn distribute_yield(&mut self, token: AccountId, delta_invested: i128) -> Result<u128, FinanceError> { 
+            let caller = self.env().caller();
+            // Check if token caller is a supported token
+            match self.token_addresses.get(token) {
+                Some(address) => {
+                    if caller != address {
+                        return Err(FinanceError::CallerIsNotToken);
+                    }
+                },
+                None => {return Err(FinanceError::TokenNotSupported);}
+            };
+
+            let block = &self.block_number();
+            let s_token = self.supported_token(token)?;
+            let new_updated_at = &self.new_updated_at(block);
+            let rate = self.get_rate_raw(&s_token, delta_t)?;
+
+            let (ntb, bi, otb) = self.new_borrowed_with_interest(&s_token, &rate)?;
+
+            Ok(0)
         }
     }
 }
