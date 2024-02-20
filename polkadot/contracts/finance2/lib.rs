@@ -201,6 +201,7 @@ mod finance2 {
             Ok(())
         }
 
+        //Function takes total_borrowable as argument, because it is not updated by this function
         fn update_me(
             &self,
             total_borrowable: u128,
@@ -363,11 +364,11 @@ mod finance2 {
 
             //It is important to check if user collateral cannot be initialized in any other way
             //It would allow user to deposit without gas collateral
-            let old_collateral = if let Some(c) = self.collaterals.get(caller) {
+            let collateral = if let Some(c) = self.collaterals.get(caller) {
                 Ok(c)
             } else {
                 let value = self.env().transferred_value();
-                if value < GAS_COLLATERAL {
+                if value != GAS_COLLATERAL {
                     Err(LAssetError::FirstDepositRequiresGasCollateral)
                 } else {
                     Ok(0)
@@ -375,17 +376,13 @@ mod finance2 {
             }?;
 
             let new_total_collateral = {
-                //new_total_collateral is calculated first, because if it doesn't overflow,
-                //it is impossible for new_collateral to overflow
                 let r = self.total_collateral.checked_add(amount);
 
-                //This check is potential blocker, but it can fail only if
-                //token as total supply greater than 2^128
-                //We cannot do anything about it, so we just return error
+                //It is almost impossible to overflow, because 
                 r.ok_or(LAssetError::DepositOverflow)
             }?;
             //impossible to overflow IF total_collateral is tracked correctly
-            let new_collateral = add(old_collateral, amount);
+            let new_collateral = add(collateral, amount);
 
             //it is crucial to update those two variables together
             self.total_collateral = new_total_collateral;
@@ -405,8 +402,12 @@ mod finance2 {
             //It is used to end recursion
             let current = self.env().account_id();
 
-            //Withdraw without deposit is useless, but not forbidden
-            let collateral = self.collaterals.get(caller).unwrap_or(0);
+            let collateral = {
+                //It is important not to allow user to withdraw without deposit
+                //It would allow user to deposit without gas collateral
+                let r = self.collaterals.get(caller);
+                r.ok_or(LAssetError::WithdrawWithoutDeposit)
+            }?;
 
             let new_collateral = {
                 //new_collateral is calculated first, because if it doesn't overflow,
@@ -444,9 +445,15 @@ mod finance2 {
         //it is hard to predict how much shares will be minted
         #[ink(message)]
         pub fn mint(&mut self, amount: u128) -> Result<(), LAssetError> {
-            let env = self.env();
             //You can mint for yourself only
-            let caller = env.caller();
+            let caller = self.env().caller();
+            let this = self.env().account_id();
+
+            {
+                //To prevent reentrancy attack, we have to transfer tokens first
+                let r = self.transfer_from_underlying(self.underlying_token, caller, this, amount);
+                r.map_err(|e| LAssetError::MintTransferFailed(e))?;
+            }
 
             let total_borrowable = self.total_borrowable;
             let (now, total_liquidity) = self.update_me(total_borrowable);
@@ -458,6 +465,7 @@ mod finance2 {
             let new_total_liquidity = {
                 //new_total_liquidity is calculated first, because if it doesn't overflow,
                 //it is impossible for new_shares and new_total_shares to overflow
+                //Practically overflow here is impossible, because transfer_from would fail first
                 let r = total_liquidity.checked_add(amount);
 
                 //This check is potential blocker, but it can fail only if
@@ -471,7 +479,7 @@ mod finance2 {
             //And it incentives caller to mint more liquidity at once
             //Early minters will get more shares, so it is incentive to hold shares longer
             let minted = {
-                let w = mulw(shares, total_shares);
+                let w = mulw(amount, total_shares);
                 div_rate(w, total_liquidity).unwrap_or(0)
             };
             //impossible to overflow IF total_liquidity is tracked correctly

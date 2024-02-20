@@ -8,8 +8,11 @@ pub enum LAssetError {
 
     WithdrawOverflow,
     WithdrawTransferFailed(PSP22Error),
+    WithdrawWithoutDeposit,
 
     MintOverflow,
+    MintTransferFailed(PSP22Error),
+
     BurnOverflow,
     BurnTooMuch,
     BorrowOverflow,
