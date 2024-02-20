@@ -21,6 +21,9 @@ mod finance2 {
     use ink::prelude::vec::Vec;
     use primitive_types::{U128, U256};
 
+    //Solving problem with small borrows/deposits
+    const GAS_COLLATERAL: u128 = 1_000_000; // TODO find something less random
+
     fn mulw(a: u128, b: u128) -> U256 {
         U128::from(a).full_mul(U128::from(b))
     }
@@ -62,11 +65,10 @@ mod finance2 {
     #[ink(storage)]
     pub struct LAssetContract {
         admin: AccountId,
-        asset: AccountId,
+        underlying_token: AccountId,
         updated_at: Timestamp,
 
         next: AccountId,
-        prev: AccountId,
 
         total_collateral: u128,
         collaterals: Mapping<AccountId, u128>,
@@ -118,9 +120,8 @@ mod finance2 {
         #[ink(constructor)]
         pub fn new(
             admin: AccountId,
-            asset: AccountId,
+            underlying_token: AccountId,
             next: AccountId,
-            prev: AccountId,
             standard_rate: u128,
             standard_min_rate: u128,
             emergency_rate: u128,
@@ -133,10 +134,9 @@ mod finance2 {
         ) -> Self {
             Self { 
                 admin,
-                asset,
+                underlying_token,
                 updated_at: Self::env().block_timestamp(),
                 next,
-                prev,
                 total_collateral: 0,
                 collaterals: Mapping::new(),
                 total_liquidity: 0,
@@ -179,6 +179,26 @@ mod finance2 {
                 }
                 unreachable!();
             }
+        }
+
+        #[cfg(not(test))]
+        fn transfer_from_underlying(&self, token: AccountId, from: AccountId, to: AccountId, value: u128) -> Result<(), PSP22Error> {
+            let mut token: contract_ref!(PSP22) = token.into();
+            token.transfer_from(from, to, value, vec![])
+        }
+        #[cfg(test)]
+        fn transfer_from_underlying(&self, token: AccountId, from: AccountId, to: AccountId, value: u128) -> Result<(), PSP22Error> {
+            Ok(())
+        }
+
+        #[cfg(not(test))]
+        fn transfer_underlying(&self, to: AccountId, value: u128) -> Result<(), PSP22Error> {
+            let mut token: contract_ref!(PSP22) = self.underlying_token.into();
+            token.transfer(to, value, vec![])
+        }
+        #[cfg(test)]
+        fn transfer_underlying(&self, to: AccountId, value: u128) -> Result<(), PSP22Error> {
+            Ok(())
         }
 
         fn update_me(
@@ -233,16 +253,11 @@ mod finance2 {
             total_borrowable: u128,
             total_debt: u128,
         ) -> u128 {
-            let standard_rate = self.standard_rate;
-            let standard_min_rate = self.standard_min_rate;
-            let emergency_rate = self.emergency_rate;
-            let emergency_max_rate = self.emergency_max_rate;
-    
-            //impossible to overflow, because now > updated_at
+            //impossible to overflow, because now >= updated_at
             let delta = sub(now as u128, updated_at as u128);
     
-            let standard_matured = standard_rate.saturating_mul(delta);
-            let emergency_matured = emergency_rate.saturating_mul(delta);
+            let standard_matured = self.standard_rate.saturating_mul(delta);
+            let emergency_matured = self.emergency_rate.saturating_mul(delta);
     
             let standard_scaled = {
                 let w = mulw(standard_matured, total_debt);
@@ -253,8 +268,8 @@ mod finance2 {
                 div_rate(w, total_liquidity).unwrap_or(0)
             };
     
-            let standard_final = standard_scaled.saturating_add(standard_min_rate);
-            let emergency_final = emergency_max_rate.saturating_sub(emergency_scaled);
+            let standard_final = standard_scaled.saturating_add(self.standard_min_rate);
+            let emergency_final = self.emergency_max_rate.saturating_sub(emergency_scaled);
     
             let interest_rate = standard_final.max(emergency_final);
             let interest = {
@@ -330,20 +345,39 @@ mod finance2 {
 
         //There function does not require anything
         //Depositing collateral is absolutely independent
+        //The only risk is that use will deposit small amount of tokens
+        //And it's going to be hard to liquidate such user
+        //We have to introduce somekind of gas collateral
         #[ink(message)]
         pub fn deposit(&mut self, amount: u128) -> Result<(), LAssetError> {
-            let env = self.env();
             //You can deposit for yourself only
-            let caller = env.caller();
+            let caller = self.env().caller();
+            let this = self.env().account_id();
 
-            let old_total_collateral = self.total_collateral;
-            //First deposit does not require any extra actions
-            let old_collateral = self.collaterals.get(caller).unwrap_or(0);
+            //To prevent reentrancy attack, we have to transfer tokens first
+            //Before any state is stored
+            {
+                let r = self.transfer_from_underlying(self.underlying_token, caller, this, amount);
+                r.map_err(|e| LAssetError::DepositTransferFailed(e))?;
+            }
+
+            //It is important to check if user collateral cannot be initialized in any other way
+            //It would allow user to deposit without gas collateral
+            let old_collateral = if let Some(c) = self.collaterals.get(caller) {
+                Ok(c)
+            } else {
+                let value = self.env().transferred_value();
+                if value < GAS_COLLATERAL {
+                    Err(LAssetError::FirstDepositRequiresGasCollateral)
+                } else {
+                    Ok(0)
+                }
+            }?;
 
             let new_total_collateral = {
                 //new_total_collateral is calculated first, because if it doesn't overflow,
                 //it is impossible for new_collateral to overflow
-                let r = old_total_collateral.checked_add(amount);
+                let r = self.total_collateral.checked_add(amount);
 
                 //This check is potential blocker, but it can fail only if
                 //token as total supply greater than 2^128
@@ -368,13 +402,9 @@ mod finance2 {
             //You can withdraw for yourself only
             let caller = self.env().caller();
 
-            //It will be needed to update values of other assets
-            let next = self.next;
-
             //It is used to end recursion
             let current = self.env().account_id();
 
-            let total_collateral = self.total_collateral;
             //Withdraw without deposit is useless, but not forbidden
             let collateral = self.collaterals.get(caller).unwrap_or(0);
 
@@ -388,10 +418,10 @@ mod finance2 {
                 r.ok_or(LAssetError::WithdrawOverflow)
             }?;
 
-            let (now, new_liquidity) = self.update_values(next, &current, &caller, new_collateral)?;
+            let (now, new_liquidity) = self.update_values(self.next, &current, &caller, new_collateral)?;
 
             //impossible to overflow IF total_collateral is tracked correctly
-            let new_total_collateral = sub(total_collateral, amount);
+            let new_total_collateral = sub(self.total_collateral, amount);
 
 
             //it is crucial to update those two variables together
@@ -400,6 +430,13 @@ mod finance2 {
 
             self.updated_at = now;
             self.total_liquidity = new_liquidity;
+
+            {
+                //Transfer out after state is updated to prevent reentrancy attack
+                let r = self.transfer_underlying(caller, amount);
+                r.map_err(|e| LAssetError::WithdrawTransferFailed(e))?;
+            }
+
             Ok(())
         }
 
