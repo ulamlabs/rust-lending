@@ -25,5 +25,9 @@ pub enum LAssetError {
 
     RepayOverflow,
     RepayWithoutBorrow,
+    RepayTransferFailed(PSP22Error),
+    RepayInsufficientCash,
+    RepayCashOverflow,
+
     CollateralValueTooLow,
 }

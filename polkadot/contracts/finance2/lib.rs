@@ -110,6 +110,8 @@ mod finance2 {
 
         price: u128,
         price_scaler: u128,
+
+        cash: u128,
     }
 
     #[cfg(test)]
@@ -161,6 +163,7 @@ mod finance2 {
                 maintenance_haircut,
                 price,
                 price_scaler: 1,
+                cash: 0,
              }
         }
 
@@ -236,9 +239,8 @@ mod finance2 {
             &self,
             now: Timestamp, 
             updated_at: Timestamp,
-            total_liquidity: u128,
-            total_borrowable: u128,
-            total_debt: u128,
+            liquidity: u128,
+            borrowable: u128,
         ) -> u128 {
             //impossible to overflow, because now >= updated_at
             let delta = sub(now as u128, updated_at as u128);
@@ -246,14 +248,16 @@ mod finance2 {
             //TODO: refactor to struct Rates and pass it by argument
             let standard_matured = self.standard_rate.saturating_mul(delta);
             let emergency_matured = self.emergency_rate.saturating_mul(delta);
+
+            let debt = sub(liquidity, borrowable);
     
             let standard_scaled = {
-                let w = mulw(standard_matured, total_debt);
-                div_rate(w, total_liquidity).unwrap_or(0)
+                let w = mulw(standard_matured, debt);
+                div_rate(w, liquidity).unwrap_or(0)
             };
             let emergency_scaled = {
-                let w = mulw(emergency_matured, total_borrowable);
-                div_rate(w, total_liquidity).unwrap_or(0)
+                let w = mulw(emergency_matured, borrowable);
+                div_rate(w, liquidity).unwrap_or(0)
             };
     
             let standard_final = standard_scaled.saturating_add(self.standard_min_rate);
@@ -261,11 +265,11 @@ mod finance2 {
     
             let interest_rate = standard_final.max(emergency_final);
             let interest = {
-                let w = mulw(total_debt, interest_rate);
+                let w = mulw(debt, interest_rate);
                 scale(w)
             };
     
-            total_liquidity.saturating_add(interest)
+            liquidity.saturating_add(interest)
         }
 
         fn quote(&self, 
@@ -406,18 +410,21 @@ mod finance2 {
             //We can ignore the fact, that user did not borrow anything yet, because
             //Borrow shares are not updated in this call
             let borrowed = self.borrowed.get(caller).unwrap_or(0);
-            let total_borrowable = self.borrowable;
+            let borrowable = self.borrowable;
+            let borrows = self.borrows;
 
             //Impossible to overflow, proofs/collateral.py for proof
-            let new_total_collateral = sub(self.collaterals, amount);
+            let new_collateral = sub(self.collaterals, amount);
+            let new_liquidity = self.increase_liquidity(now, updated_at, self.liquidity, borrowable);
+            let new_debt = sub(new_liquidity, borrowable);
 
-            let (quoted_collateral, quoted_debt, new_liquidity) = self.quote(&caller, now, updated_at, new_collateral, borrowed, total_borrowable);
+            let (quoted_collateral, quoted_debt) = self.quote(&caller, now, updated_at, new_collateral, borrowed, borrows, new_debt);
             let (collateral_value, debt_value) = self.initial_values(quoted_collateral, quoted_debt);
 
             //Collateral must be updated before update
             //Inside update_all, we call next, so it is possible to reenter withdraw
             //Those values can be updated now, because update does not affect them
-            self.collaterals = new_total_collateral;
+            self.collaterals = new_collateral;
             self.collateral.insert(caller, &new_collateral);
 
             //We can update those now, because, updating other pools does not affect them
@@ -456,10 +463,8 @@ mod finance2 {
 
             let updated_at = self.updated_at;
             let now = self.get_now(updated_at);
-            let old_total_liquidity = self.liquidity;
-            let total_borrowable = self.borrowable;
-            let old_debt = sub(old_total_liquidity, total_borrowable);
-            let total_liquidity = self.increase_liquidity(now, updated_at, old_total_liquidity, total_borrowable, old_debt);
+            let borrowable = self.borrowable;
+            let total_liquidity = self.increase_liquidity(now, updated_at, self.liquidity, borrowable);
 
             let total_shares = self.shares;
             //First mint does not require any extra actions
@@ -486,7 +491,7 @@ mod finance2 {
             //impossible to overflow IF total_liquidity is tracked correctly
             let new_shares = add(shares, minted);
             let new_total_shares = add(total_shares, minted);
-            let new_total_borrowable = add(total_borrowable, amount);
+            let new_total_borrowable = add(borrowable, amount);
 
             //it is crucial to update those four variables together
             self.liquidity = new_total_liquidity;
@@ -509,11 +514,8 @@ mod finance2 {
             let timestamp = self.env().block_timestamp();
             let now = logic::get_now(timestamp, updated_at);
 
-            let old_liquidity = self.liquidity;
             let borrowable = self.borrowable;
-            let old_debt = sub(old_liquidity, borrowable);
-
-            let liquidity = self.increase_liquidity(now, updated_at, old_liquidity, borrowable, old_debt);
+            let liquidity = self.increase_liquidity(now, updated_at, self.liquidity, borrowable);
 
             let shares = self.shares;
             //Burn without mint is useless, but not forbidden
@@ -576,9 +578,7 @@ mod finance2 {
             let current = self.env().account_id();
             
             let borrowable = self.borrowable;
-            let liquidity = self.liquidity;
-            let old_debt = sub(liquidity, borrowable);            
-            let new_liquidity = self.increase_liquidity(now, updated_at, liquidity, borrowable, old_debt);
+            let new_liquidity = self.increase_liquidity(now, updated_at, self.liquidity, borrowable);
 
             let borrows = self.borrows;
             let debt = sub(new_liquidity, borrowable);
@@ -646,9 +646,17 @@ mod finance2 {
         }
 
         #[ink(message)]
-        pub fn repay(&mut self, amount: u128) -> Result<(), LAssetError> {
+        pub fn repay(&mut self, amount: u128, cash: u128) -> Result<(), LAssetError> {
             //You can repay for yourself only
             let caller = self.env().caller();
+            let this = self.env().account_id();
+
+            //Transfer first to avoid read only reentrancy attack
+            if let Err(e) = self.transfer_from_underlying(self.underlying_token, caller, this, cash) {
+                Err(LAssetError::RepayTransferFailed(e))
+            } else {
+                Ok(())
+            }?;
 
             let updated_at = self.updated_at;
             let timestamp = self.env().block_timestamp();
@@ -666,27 +674,36 @@ mod finance2 {
                 Err(LAssetError::RepayOverflow)
             }?;
 
-            let liquidity = self.liquidity;
             let borrowable = self.borrowable;
-            let debt = sub(liquidity, borrowable);
-            let new_liquidity = self.increase_liquidity(now, updated_at, liquidity, borrowable, debt);
+            let liquidity = self.increase_liquidity(now, updated_at, self.liquidity, borrowable);
             
-            let new_debt = sub(new_liquidity, borrowable);
+            let new_debt = sub(liquidity, borrowable);
             let borrows = self.borrows;
             let repayed = {
-                let w = mulw(amount, debt);
-                div_rate(w, borrows).unwrap_or(0)
+                let w = mulw(amount, new_debt);
+                ceil_rate(w, borrows).unwrap_or(0)
             };
+            let extra_cash = if let Some(r) = cash.checked_sub(repayed) {
+                Ok(r)
+            } else {
+                Err(LAssetError::RepayInsufficientCash)
+            }?;
 
+            let new_cash = if let Some(r) = self.cash.checked_add(extra_cash) {
+                Ok(r)
+            } else {
+                Err(LAssetError::RepayCashOverflow)
+            }?;
             let new_borrowable = add(borrowable, repayed);
             let new_borrows = sub(borrows, amount);
 
             //it is crucial to update those three variables together
+            self.cash = new_cash;
             self.borrowable = new_borrowable;
             self.borrows = new_borrows;
             self.borrowed.insert(caller, &new_borrowed);
 
-            self.liquidity = new_liquidity;
+            self.liquidity = liquidity;
             self.updated_at = now;
 
             Ok(())
@@ -699,13 +716,18 @@ mod finance2 {
             let updated_at = self.updated_at;
             let now = self.get_now(updated_at);
             let next = self.next;
-            let user_collateral = self.collateral.get(user).unwrap_or(0);
+            let collateral = self.collateral.get(user).unwrap_or(0);
+            let borrowed = self.borrowed.get(user).unwrap_or(0);
+            let borrows = self.borrows;
+            let borrowable = self.borrowable;
             
-            let (collateral, debt, new_liquidity) = self.quote(&user, now, updated_at, user_collateral);
-            let (collateral_value, debt_value) = self.initial_values(collateral, debt);
+            let liquidity = self.increase_liquidity(now, updated_at, self.liquidity, borrowable);
+            let new_debt = sub(liquidity, borrowable);
+            let (quoted_collateral, quoted_debt) = self.quote(&user, now, updated_at, collateral, borrowed, borrows, new_debt);
+            let (collateral_value, debt_value) = self.initial_values(quoted_collateral, quoted_debt);
 
             self.updated_at = now;
-            self.liquidity = new_liquidity;
+            self.liquidity = liquidity;
 
             (next, collateral_value, debt_value)
         }
