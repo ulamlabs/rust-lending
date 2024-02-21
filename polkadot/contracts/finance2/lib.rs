@@ -65,6 +65,13 @@ mod finance2 {
     use ink::storage::Mapping;
     use crate::{errors::LAssetError, psp22::{PSP22Error, Transfer, Approval, PSP22}, LAsset};
 
+    struct Rates {
+        standard_rate: u128,
+        standard_min_rate: u128,
+        emergency_rate: u128,
+        emergency_max_rate: u128,
+    }
+
     #[ink(storage)]
     pub struct LAssetContract {
         admin: AccountId,
@@ -94,11 +101,7 @@ mod finance2 {
         //Number of shares owned by each user
         borrowed: Mapping<AccountId, u128>,
 
-        standard_rate: u128,
-        standard_min_rate: u128,
-
-        emergency_rate: u128,
-        emergency_max_rate: u128,
+        rates: Rates,
 
         initial_margin: u128,
         maintenance_margin: u128,
@@ -151,10 +154,12 @@ mod finance2 {
                 borrowable: 0,
                 borrows: 0,
                 borrowed: Mapping::new(),
-                standard_rate,
-                standard_min_rate,
-                emergency_rate,
-                emergency_max_rate,
+                rates: Rates {
+                    standard_rate,
+                    standard_min_rate,
+                    emergency_rate,
+                    emergency_max_rate,
+                },
                 initial_margin,
                 maintenance_margin,
                 initial_haircut,
