@@ -1,5 +1,6 @@
 #![cfg_attr(not(feature = "std"), no_std, no_main)]
 
+use errors::LAssetError;
 use ink::primitives::AccountId;
 
 mod errors;
@@ -13,6 +14,9 @@ mod tests;
 pub trait LAsset {
     #[ink(message)]
     fn update(&mut self, user: AccountId) -> (AccountId, u128, u128);
+
+    #[ink(message)]
+    fn repay(&mut self, user: AccountId, amount: u128, cash: u128, cash_owner: AccountId) -> Result<(AccountId, u128, u128, u128, u128, u128), LAssetError>;
 }
 
 #[ink::contract]
@@ -151,6 +155,26 @@ mod finance2 {
                 }
                 if *next == AccountId::from([0x3; 32]) {
                     return L_ETH.as_mut().unwrap().update(*user);
+                }
+                unreachable!();
+            }
+        }
+        #[cfg(not(test))]
+        fn repay_any(&self, app: AccountId, user: AccountId, amount: u128, cash: u128, cash_owner: AccountId) -> Result<(AccountId, u128, u128, u128, u128, u128), LAssetError> {
+            let mut app: contract_ref!(LAsset) = app.into();
+            app.repay(user, amount, cash, cash_owner)
+        }
+        #[cfg(test)]
+        fn repay_any(&self, app: AccountId, user: AccountId, amount: u128, cash: u128, cash_owner: AccountId) -> Result<(AccountId, u128, u128, u128, u128, u128), LAssetError> {
+            unsafe {
+                if app == AccountId::from([0x1; 32]) {
+                    return L_BTC.as_mut().unwrap().repay(user, amount, cash, cash_owner);
+                }
+                if app == AccountId::from([0x2; 32]) {
+                    return L_USDC.as_mut().unwrap().repay(user, amount, cash, cash_owner);
+                }
+                if app == AccountId::from([0x3; 32]) {
+                    return L_ETH.as_mut().unwrap().repay(user, amount, cash, cash_owner);
                 }
                 unreachable!();
             }
@@ -606,8 +630,34 @@ mod finance2 {
             Ok(())
         }
 
+        
+
         #[ink(message)]
-        pub fn repay(&mut self, user: AccountId, amount: u128, cash: u128, cash_owner: AccountId) -> Result<(AccountId, u128, u128, u128, u128, u128), LAssetError> {
+        pub fn liquidate(&mut self, user: AccountId, repay_asset: AccountId, repay_underlying: AccountId, amount: u128, cash: u128) -> Result<(), LAssetError> {
+            let caller = self.env().caller();
+            let this = self.env().account_id();
+            if let Err(e) = self.transfer_from_underlying(repay_underlying, caller, this, cash) {
+                Err(LAssetError::LiquidateTransferFailed(e))
+            } else {
+                Ok(())
+            }?;
+            if let Err(e) = self.approve_underlying(repay_underlying, repay_asset, cash) {
+                Err(LAssetError::LiquidateApproveFailed(e))
+            } else {
+                Ok(())
+            }?;
+            //repay
+            //update all
+            //withdraw collateral
+
+            Ok(())
+
+        }
+    }
+
+    impl LAsset for LAssetContract {
+        #[ink(message)]
+        fn repay(&mut self, user: AccountId, amount: u128, cash: u128, cash_owner: AccountId) -> Result<(AccountId, u128, u128, u128, u128, u128), LAssetError> {
             //You can repay for yourself only
             let caller = self.env().caller();
             let this = self.env().account_id();
@@ -711,31 +761,6 @@ mod finance2 {
             Ok((next, qouted_repaid, initial_collateral_value, initial_debt_value, maintenance_collateral_value, maintenance_debt_value))
         }
 
-
-        #[ink(message)]
-        pub fn liquidate(&mut self, user: AccountId, repay_asset: AccountId, repay_underlying: AccountId, amount: u128, cash: u128) -> Result<(), LAssetError> {
-            let caller = self.env().caller();
-            let this = self.env().account_id();
-            if let Err(e) = self.transfer_from_underlying(repay_underlying, caller, this, cash) {
-                Err(LAssetError::LiquidateTransferFailed(e))
-            } else {
-                Ok(())
-            }?;
-            if let Err(e) = self.approve_underlying(repay_underlying, repay_asset, cash) {
-                Err(LAssetError::LiquidateApproveFailed(e))
-            } else {
-                Ok(())
-            }?;
-            //repay
-            //update all
-            //withdraw collateral
-
-            Ok(())
-
-        }
-    }
-
-    impl LAsset for LAssetContract {
         #[ink(message)]
         fn update(&mut self, user: AccountId) -> (AccountId, u128, u128) {
             let updated_at = self.updated_at;
