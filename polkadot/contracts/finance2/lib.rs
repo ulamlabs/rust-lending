@@ -21,42 +21,11 @@ mod finance2 {
     use ink::contract_ref;
     use ink::prelude::vec::Vec;
     use ink::prelude::vec;
-    use primitive_types::{U128, U256};
-    use crate::logic;
+    use crate::logic::{self, add, ceil_rate, div_rate, mulw, scale, sub};
 
     //Solving problem with small borrows/deposits
     const GAS_COLLATERAL: u128 = 1_000_000; // TODO find something less random
 
-    fn mulw(a: u128, b: u128) -> U256 {
-        U128::from(a).full_mul(U128::from(b))
-    }
-    fn div_rate(a: U256, b: u128) -> Option<u128> {
-        let r = a.checked_div(U256::from(b));
-        r.map(|x| x.low_u128())
-    }
-    fn div(a: U256, b: u128) -> Option<u128> {
-        let r = a.checked_div(U256::from(b));
-        r.and_then(|x| x.try_into().ok())
-    }
-    fn add(a: u128, b: u128) -> u128 {
-        a.wrapping_add(b)
-    }
-    fn sub(a: u128, b: u128) -> u128 {
-        a.wrapping_sub(b)
-    }
-    fn ceil_rate(a: U256, b: u128) -> Option<u128> {
-        if b == 0 {
-            None
-        } else {
-            let (result, rem) = a.div_mod(U256::from(b));
-            let c = !rem.is_zero() as u128;
-            Some(add(result.low_u128(), c))
-        }
-    }
-    fn scale(a: U256) -> u128 {
-        use core::ops::Shr;
-        a.shr(128).low_u128()
-    }
     // fn scale_up(a: U256) -> u128 {
     //     let c = !a.is_zero() as u128;
     //     add(scale(a), c)
@@ -64,13 +33,6 @@ mod finance2 {
 
     use ink::storage::Mapping;
     use crate::{errors::LAssetError, psp22::{PSP22Error, Transfer, Approval, PSP22}, LAsset};
-
-    struct Rates {
-        standard_rate: u128,
-        standard_min_rate: u128,
-        emergency_rate: u128,
-        emergency_max_rate: u128,
-    }
 
     #[ink(storage)]
     pub struct LAssetContract {
@@ -101,7 +63,11 @@ mod finance2 {
         //Number of shares owned by each user
         borrowed: Mapping<AccountId, u128>,
 
-        rates: Rates,
+        standard_rate: u128,
+        standard_min_rate: u128,
+
+        emergency_rate: u128,
+        emergency_max_rate: u128,
 
         initial_margin: u128,
         maintenance_margin: u128,
@@ -154,12 +120,10 @@ mod finance2 {
                 borrowable: 0,
                 borrows: 0,
                 borrowed: Mapping::new(),
-                rates: Rates {
-                    standard_rate,
-                    standard_min_rate,
-                    emergency_rate,
-                    emergency_max_rate,
-                },
+                standard_rate,
+                standard_min_rate,
+                emergency_rate,
+                emergency_max_rate,
                 initial_margin,
                 maintenance_margin,
                 initial_haircut,
@@ -274,33 +238,6 @@ mod finance2 {
     
             liquidity.saturating_add(interest)
         }
-
-        fn quote(&self, 
-            collateral: u128,
-            borrowed: u128,
-            borrows: u128,
-            liquidity: u128,
-            borrowable: u128,
-        ) -> (u128, u128) {
-            let price = self.price;
-            let price_scaler = self.price_scaler;
-
-            let quoted_collateral = {
-                let w = mulw(collateral, price);
-                div(w, price_scaler).unwrap_or(u128::MAX)
-            };
-            let debt = sub(liquidity, borrowable);
-
-            let user_debt = {
-                let w = mulw(borrowed, debt);
-                div_rate(w, borrows).unwrap_or(0)
-            };
-            let quoted_debt = {
-                let w = mulw(user_debt, price);
-                div(w, price_scaler).unwrap_or(u128::MAX)
-            };
-            (quoted_collateral, quoted_debt)
-        } 
 
         fn initial_values(
             &self,
@@ -417,7 +354,16 @@ mod finance2 {
             //Impossible to overflow, proofs/collateral.py for proof
             let new_liquidity = self.increase_liquidity(now, updated_at, self.liquidity, borrowable);
 
-            let (quoted_collateral, quoted_debt) = self.quote(new_collateral, borrowed, borrows, new_liquidity, borrowable);
+            let quoter = logic::Quoter {
+                price: self.price,
+                price_scaler: self.price_scaler,
+                collateral: new_collateral,
+                borrowed,
+                borrows,
+                liquidity: new_liquidity,
+                borrowable,
+            };
+            let (quoted_collateral, quoted_debt) = quoter.quote();
             let (collateral_value, debt_value) = self.initial_values(quoted_collateral, quoted_debt);
 
             //Collateral must be updated before update
@@ -618,7 +564,16 @@ mod finance2 {
             let new_borrowed = add(borrowed, minted);
             let new_borrows = add(borrows, minted);
             
-            let (quoted_collateral, quoted_debt) = self.quote(collateral, new_borrowed, new_borrows, new_liquidity, new_borrowable);
+            let qouter = logic::Quoter {
+                price: self.price,
+                price_scaler: self.price_scaler,
+                collateral,
+                borrowed: new_borrowed,
+                borrows: new_borrows,
+                liquidity: new_liquidity,
+                borrowable: new_borrowable,
+            };
+            let (quoted_collateral, quoted_debt) = qouter.quote();
 
             let (collateral_value, debt_value) = self.initial_values(quoted_collateral, quoted_debt);
             
@@ -718,7 +673,16 @@ mod finance2 {
             let borrowable = self.borrowable;
             
             let liquidity = self.increase_liquidity(now, updated_at, self.liquidity, borrowable);
-            let (quoted_collateral, quoted_debt) = self.quote(collateral, borrowed, borrows, liquidity, borrowable);
+            let quot = logic::Quoter {
+                price: self.price,
+                price_scaler: self.price_scaler,
+                collateral,
+                borrowed,
+                borrows,
+                liquidity,
+                borrowable,
+            };
+            let (quoted_collateral, quoted_debt) = quot.quote();
             let (collateral_value, debt_value) = self.initial_values(quoted_collateral, quoted_debt);
 
             self.updated_at = now;
