@@ -78,7 +78,7 @@ mod finance2 {
         price: u128,
         price_scaler: u128,
 
-        cash: u128,
+        cash: Mapping<AccountId, u128>,
     }
 
     #[cfg(test)]
@@ -130,7 +130,7 @@ mod finance2 {
                 maintenance_haircut,
                 price,
                 price_scaler: 1,
-                cash: 0,
+                cash: Mapping::new(),
              }
         }
 
@@ -173,6 +173,15 @@ mod finance2 {
         }
         #[cfg(test)]
         fn transfer_underlying(&self, to: AccountId, value: u128) -> Result<(), PSP22Error> {
+            Ok(())
+        }
+        #[cfg(not(test))]
+        fn approve_underlying(&self, token: AccountId, to: AccountId, value: u128) -> Result<(), PSP22Error> {
+            let mut token: contract_ref!(PSP22) = token.into();
+            token.approve(to, value)
+        }
+        #[cfg(test)]
+        fn approve_underlying(&self, token: AccountId, to: AccountId, value: u128) -> Result<(), PSP22Error> {
             Ok(())
         }
 
@@ -223,15 +232,16 @@ mod finance2 {
                 }
             }?;
 
-            let new_total_collateral = {
-                let r = self.collaterals.checked_add(amount);
-                r.ok_or(LAssetError::DepositOverflow)
+            let new_collaterals = if let Some(nc) = self.collaterals.checked_add(amount) {
+                Ok(nc)
+            } else {
+                Err(LAssetError::DepositOverflow)
             }?;
             //Impossible to overflow, proofs/collateral.py for proof
             let new_collateral = add(collateral, amount);
 
             //it is crucial to update those two variables together
-            self.collaterals = new_total_collateral;
+            self.collaterals = new_collaterals;
             self.collateral.insert(caller, &new_collateral);
 
             Ok(())
@@ -251,17 +261,18 @@ mod finance2 {
             let updated_at = self.updated_at;
             let now = self.get_now(updated_at);
 
-            let collateral = {
-                //It is important not to allow user to withdraw without deposit
-                //It would allow user to deposit without gas collateral
-                let r = self.collateral.get(caller);
-                r.ok_or(LAssetError::WithdrawWithoutDeposit)
+            let collateral = if let Some(c) = self.collateral.get(caller) {
+                Ok(c)
+            } else {
+                Err(LAssetError::WithdrawWithoutDeposit)
             }?;
 
-            let new_collateral = {
-                let r = collateral.checked_sub(amount);
-                r.ok_or(LAssetError::WithdrawOverflow)
+            let new_collateral = if let Some(nc) = collateral.checked_sub(amount) {
+                Ok(nc)
+            } else {
+                Err(LAssetError::WithdrawOverflow)
             }?;
+            let new_collaterals = sub(self.collaterals, amount);
 
             //We can ignore the fact, that user did not borrow anything yet, because
             //Borrow shares are not updated in this call
@@ -279,7 +290,7 @@ mod finance2 {
                 standard_min_rate: self.standard_min_rate,
                 emergency_max_rate: self.emergency_max_rate,
             };
-            let new_liquidity = accruer.accrue();
+            let liquidity = accruer.accrue();
 
             let quoter = logic::Quoter {
                 price: self.price,
@@ -287,7 +298,7 @@ mod finance2 {
                 collateral: new_collateral,
                 borrowed,
                 borrows,
-                liquidity: new_liquidity,
+                liquidity,
                 borrowable,
             };
             let (quoted_collateral, quoted_debt) = quoter.quote();
@@ -302,13 +313,13 @@ mod finance2 {
             //Collateral must be updated before update
             //Inside update_all, we call next, so it is possible to reenter withdraw
             //Those values can be updated now, because update does not affect them
-            self.collaterals = new_collateral;
+            self.collaterals = new_collaterals;
             self.collateral.insert(caller, &new_collateral);
 
             //We can update those now, because, updating other pools does not affect them
             //If we do it later, it would be possible to reenter and currupt total liquidity state
             self.updated_at = now;
-            self.liquidity = new_liquidity;
+            self.liquidity = liquidity;
 
             //inline update_all
             let mut next = self.next;
@@ -389,8 +400,12 @@ mod finance2 {
             }?;
             
             //impossible to overflow IF total_liquidity is tracked correctly
+            let new_shares = if let Some(ns) = shares.checked_add(minted) {
+                Ok(ns)
+            } else {
+                Err(LAssetError::MintSharesOverflow)
+            }?;
             let new_share = add(share, minted);
-            let new_shares = add(shares, minted);
             let new_borrowable = add(borrowable, amount);
 
             //it is crucial to update those four variables together
@@ -451,6 +466,7 @@ mod finance2 {
             //impossible to overflow IF total_liquidity is tracked correctly
             let new_liquidity = sub(liquidity, to_withdraw);
 
+            //TODO: resolve potential front running
             let new_borrowable = if let Some(r) = borrowable.checked_sub(to_withdraw) {
                 Ok(r)
             } else {
@@ -497,7 +513,7 @@ mod finance2 {
                 standard_min_rate: self.standard_min_rate,
                 emergency_max_rate: self.emergency_max_rate,
             };
-            let new_liquidity = accruer.accrue();
+            let liquidity = accruer.accrue();
 
 
             let new_borrowable = if let Some(r) = borrowable.checked_sub(amount) {
@@ -507,7 +523,7 @@ mod finance2 {
             }?;
 
             let borrows = self.borrows;
-            let debt = sub(new_liquidity, borrowable);
+            let debt = sub(liquidity, borrowable);
             //Number of borrowed shares would be reduced by division precision
             //It is not wanted, because it would lead to situation, when
             //caller could borrow some liquidity without minting any shares
@@ -521,7 +537,7 @@ mod finance2 {
                     if let Some(first) = amount.checked_shl(16) {
                         Ok(first)
                     } else {
-                        Err(LAssetError::BurnOverflow)
+                        Err(LAssetError::BorrowOverflow)
                     }
                 }
             }?;
@@ -536,8 +552,12 @@ mod finance2 {
 
             let collateral = self.collateral.get(caller).unwrap_or(0);
             
+            let new_borrows = if let Some(nb) = borrows.checked_add(minted) {
+                Ok(nb)
+            } else {
+                Err(LAssetError::BorrowSharesOverflow)
+            }?;
             let new_borrowed = add(borrowed, minted);
-            let new_borrows = add(borrows, minted);
             
             let qouter = logic::Quoter {
                 price: self.price,
@@ -545,7 +565,7 @@ mod finance2 {
                 collateral,
                 borrowed: new_borrowed,
                 borrows: new_borrows,
-                liquidity: new_liquidity,
+                liquidity: liquidity,
                 borrowable: new_borrowable,
             };
             let (quoted_collateral, quoted_debt) = qouter.quote();
@@ -563,7 +583,7 @@ mod finance2 {
             self.borrows = new_borrows;
             self.borrowed.insert(caller, &new_borrowed);
 
-            self.liquidity = new_liquidity;
+            self.liquidity = liquidity;
             self.updated_at = now;
 
             let mut next = self.next;
@@ -589,7 +609,7 @@ mod finance2 {
         }
 
         #[ink(message)]
-        pub fn repay(&mut self, amount: u128, cash: u128) -> Result<(), LAssetError> {
+        pub fn repay(&mut self, user: AccountId, amount: u128, cash: u128, cash_owner: AccountId) -> Result<(), LAssetError> {
             //You can repay for yourself only
             let caller = self.env().caller();
             let this = self.env().account_id();
@@ -605,16 +625,16 @@ mod finance2 {
             let timestamp = self.env().block_timestamp();
             let now = logic::get_now(timestamp, updated_at);
 
-            let borrowed = if let Some(r) = self.borrowed.get(caller) {
+            let borrowed = if let Some(r) = self.borrowed.get(user) {
                 Ok(r)
             } else {
                 Err(LAssetError::RepayWithoutBorrow)
             }?;
 
-            let new_borrowed = if let Some(r) = borrowed.checked_sub(amount) {
-                Ok(r)
+            let (amount, new_borrowed) = if let Some(r) = borrowed.checked_sub(amount) {
+                Ok((amount, r))
             } else {
-                Err(LAssetError::RepayOverflow)
+                Ok((borrowed, 0))
             }?;
 
             let borrowable = self.borrowable;
@@ -642,7 +662,8 @@ mod finance2 {
                 Err(LAssetError::RepayInsufficientCash)
             }?;
 
-            let new_cash = if let Some(r) = self.cash.checked_add(extra_cash) {
+            let cash = self.cash.get(cash_owner).unwrap_or(0);
+            let new_cash = if let Some(r) = cash.checked_add(extra_cash) {
                 Ok(r)
             } else {
                 Err(LAssetError::RepayCashOverflow)
@@ -651,15 +672,37 @@ mod finance2 {
             let new_borrows = sub(borrows, amount);
 
             //it is crucial to update those three variables together
-            self.cash = new_cash;
+            self.cash.insert(cash_owner, &new_cash);
             self.borrowable = new_borrowable;
             self.borrows = new_borrows;
-            self.borrowed.insert(caller, &new_borrowed);
+            self.borrowed.insert(user, &new_borrowed);
 
             self.liquidity = liquidity;
             self.updated_at = now;
 
             Ok(())
+        }
+
+        #[ink(message)]
+        pub fn liquidate(&mut self, user: AccountId, repay_asset: AccountId, repay_underlying: AccountId, amount: u128, cash: u128) -> Result<(), LAssetError> {
+            let caller = self.env().caller();
+            let this = self.env().account_id();
+            if let Err(e) = self.transfer_from_underlying(repay_underlying, caller, this, cash) {
+                Err(LAssetError::LiquidateTransferFailed(e))
+            } else {
+                Ok(())
+            }?;
+            if let Err(e) = self.approve_underlying(repay_underlying, repay_asset, cash) {
+                Err(LAssetError::LiquidateApproveFailed(e))
+            } else {
+                Ok(())
+            }?;
+            //repay
+            //update all
+            //withdraw collateral
+
+            Ok(())
+
         }
     }
 
@@ -668,7 +711,6 @@ mod finance2 {
         fn update(&mut self, user: AccountId) -> (AccountId, u128, u128) {
             let updated_at = self.updated_at;
             let now = self.get_now(updated_at);
-            let next = self.next;
             let collateral = self.collateral.get(user).unwrap_or(0);
             let borrowed = self.borrowed.get(user).unwrap_or(0);
             let borrows = self.borrows;
@@ -694,6 +736,7 @@ mod finance2 {
                 liquidity,
                 borrowable,
             };
+
             let (quoted_collateral, quoted_debt) = quot.quote();
             let valuator = logic::Valuator {
                 margin: self.initial_margin,
@@ -706,6 +749,7 @@ mod finance2 {
             self.updated_at = now;
             self.liquidity = liquidity;
 
+            let next = self.next;
             (next, collateral_value, debt_value)
         }
     }

@@ -11,6 +11,7 @@ pub fn div(a: U256, b: u128) -> Option<u128> {
     let r = a.checked_div(U256::from(b));
     r.and_then(|x| x.try_into().ok())
 }
+
 pub fn add(a: u128, b: u128) -> u128 {
     a.wrapping_add(b)
 }
@@ -23,7 +24,21 @@ pub fn ceil_rate(a: U256, b: u128) -> Option<u128> {
     } else {
         let (result, rem) = a.div_mod(U256::from(b));
         let c = !rem.is_zero() as u128;
-        Some(add(result.low_u128(), c))
+        let x = result.low_u128();
+        Some(add(x, c))
+    }
+}
+pub fn ceil_up(a: U256, b: u128) -> Option<u128> {
+    if b == 0 {
+        None
+    } else {
+        let (result, rem) = a.div_mod(U256::from(b));
+        if let Some(x) = result.try_into().ok() {
+            let c = !rem.is_zero() as u128;
+            Some(add(x, c))
+        } else {
+            None
+        }
     }
 }
 pub fn scale(a: U256) -> u128 {
@@ -58,11 +73,11 @@ impl Quoter {
 
         let user_debt = {
             let w = mulw(self.borrowed, debt);
-            div_rate(w, self.borrows).unwrap_or(0)
+            ceil_up(w, self.borrows).unwrap_or(debt)
         };
         let quoted_debt = {
             let w = mulw(user_debt, self.price);
-            div(w, self.price_scaler).unwrap_or(u128::MAX)
+            ceil_up(w, self.price_scaler).unwrap_or(u128::MAX)
         };
         (quoted_collateral, quoted_debt)
     }

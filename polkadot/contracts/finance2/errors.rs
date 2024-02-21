@@ -11,6 +11,7 @@ pub enum LAssetError {
     WithdrawWithoutDeposit,
 
     MintLiquidityOverflow,
+    MintSharesOverflow,
     MintOverflow,
     MintTransferFailed(PSP22Error),
 
@@ -19,6 +20,7 @@ pub enum LAssetError {
     BurnTransferFailed(PSP22Error),
     
     BorrowOverflow,
+    BorrowSharesOverflow,
     BorrowableOverflow,
     FirstBorrowRequiresGasCollateral,
     BorrowTransferFailed(PSP22Error),
@@ -30,4 +32,11 @@ pub enum LAssetError {
     RepayCashOverflow,
 
     CollateralValueTooLow,
+
+    LiquidateTransferFailed(PSP22Error),
+    LiquidateApproveFailed(PSP22Error),
+    LiquidateForNothing,
+
+    ForceRepayTransferFailed(PSP22Error),
+    ForceRepayWithoutBorrow,
 }
