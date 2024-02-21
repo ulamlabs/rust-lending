@@ -176,30 +176,6 @@ mod finance2 {
             Ok(())
         }
 
-        fn update_all(&self, 
-            mut next: AccountId, 
-            current: &AccountId, 
-            user: &AccountId,
-            mut total_collateral_value: u128,
-            mut total_debt_value: u128,
-        ) -> Result<(), LAssetError> {
-            while next != *current {
-                //It is possible to reentract inside update_next, but it is not a problem
-                //Because result of update_next is used only to accept the update
-                //So if someone tries to trick this call, inside call must be tricked as well
-                //As inside call is protected in the same way, at the end transaction will fail
-                let (next2, collateral_value, debt_value) = self.update_next(&next, user);
-                next = next2;
-                total_collateral_value = total_collateral_value.saturating_add(collateral_value);
-                total_debt_value = total_debt_value.saturating_add(debt_value);
-            }
-            if total_collateral_value < total_debt_value {
-                Err(LAssetError::CollateralValueTooLow)
-            } else {
-                Ok(())
-            }
-        }
-
         //We are not sure if now can be less than updated_at
         //It is possible, someone could accrue interest few times for the same period
         //Also integer overflow could occur and time delta calculation could wrap around
@@ -321,7 +297,7 @@ mod finance2 {
                 quoted_collateral,
                 quoted_debt,
             };
-            let (collateral_value, debt_value) = valuator.values();
+            let (mut collateral_value, mut debt_value) = valuator.values();
 
             //Collateral must be updated before update
             //Inside update_all, we call next, so it is possible to reenter withdraw
@@ -334,7 +310,19 @@ mod finance2 {
             self.updated_at = now;
             self.liquidity = new_liquidity;
 
-            self.update_all(self.next, &this, &caller, collateral_value, debt_value)?;
+            //inline update_all
+            let mut next = self.next;
+            while next != this {
+                let (next2, next_collateral_value, next_debt_value) = self.update_next(&next, &caller);
+                next = next2;
+                collateral_value = collateral_value.saturating_add(next_collateral_value);
+                debt_value = debt_value.saturating_add(next_debt_value);
+            }
+            if collateral_value < debt_value {
+                Err(LAssetError::CollateralValueTooLow)
+            } else {
+                Ok(())
+            }?;
 
             //Transfer out after state is updated to prevent reentrancy attack
             //If someone tries to reenter, the most what can be achieved would be to change events emiting order
@@ -496,7 +484,6 @@ mod finance2 {
             let timestamp = self.env().block_timestamp();
             let now = logic::get_now(timestamp, updated_at);
             
-            let next = self.next;
             let current = self.env().account_id();
             
             let borrowable = self.borrowable;
@@ -569,7 +556,7 @@ mod finance2 {
                 quoted_collateral,
                 quoted_debt,
             };
-            let (collateral_value, debt_value) = valuator.values();
+            let (mut collateral_value, mut debt_value) = valuator.values();
             
             //it is crucial to update those three variables together
             self.borrowable = new_borrowable;
@@ -579,7 +566,18 @@ mod finance2 {
             self.liquidity = new_liquidity;
             self.updated_at = now;
 
-            self.update_all(next, &current, &caller, collateral_value, debt_value)?;
+            let mut next = self.next;
+            while next != current {
+                let (next2, next_collateral_value, next_debt_value) = self.update_next(&next, &caller);
+                next = next2;
+                collateral_value = collateral_value.saturating_add(next_collateral_value);
+                debt_value = debt_value.saturating_add(next_debt_value);
+            }
+            if collateral_value < debt_value {
+                Err(LAssetError::CollateralValueTooLow)
+            } else {
+                Ok(())
+            }?;
 
             if let Err(e) = self.transfer_underlying(caller, amount) {
                 Err(LAssetError::BorrowTransferFailed(e))
@@ -697,7 +695,13 @@ mod finance2 {
                 borrowable,
             };
             let (quoted_collateral, quoted_debt) = quot.quote();
-            let (collateral_value, debt_value) = self.initial_values(quoted_collateral, quoted_debt);
+            let valuator = logic::Valuator {
+                margin: self.initial_margin,
+                haircut: self.initial_haircut,
+                quoted_collateral,
+                quoted_debt,
+            };
+            let (collateral_value, debt_value) = valuator.values();
 
             self.updated_at = now;
             self.liquidity = liquidity;
