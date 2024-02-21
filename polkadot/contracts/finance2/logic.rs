@@ -107,3 +107,24 @@ impl Accruer {
         self.liquidity.saturating_add(interest)
     }
 }
+
+pub struct Valuator {
+    pub margin: u128,
+    pub haircut: u128,
+    pub quoted_collateral: u128,
+    pub quoted_debt: u128,
+}
+impl Valuator {
+    pub fn values(self) -> (u128, u128) {
+        let collateral_value = {
+            let w = mulw(self.quoted_collateral, self.haircut);
+            scale(w)
+        };
+        let debt_delta = {
+            let w = mulw(self.quoted_debt, self.margin);
+            scale(w)
+        };
+        let debt_value = self.quoted_debt.saturating_add(debt_delta);
+        (collateral_value, debt_value)
+    }
+}

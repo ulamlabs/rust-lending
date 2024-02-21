@@ -199,24 +199,6 @@ mod finance2 {
                 Ok(())
             }
         }
-        fn initial_values(
-            &self,
-            collateral_price: u128,
-            debt_price: u128, 
-        ) -> (u128, u128) {
-            let margin = self.initial_margin;
-            let haircut = self.initial_haircut;
-            let collateral_value = {
-                let w = mulw(collateral_price, haircut);
-                scale(w)
-            };
-            let debt_delta = {
-                let w = mulw(debt_price, margin);
-                scale(w)
-            };
-            let debt_value = debt_price.saturating_add(debt_delta);
-            (collateral_value, debt_value)
-        }
 
         //We are not sure if now can be less than updated_at
         //It is possible, someone could accrue interest few times for the same period
@@ -333,7 +315,13 @@ mod finance2 {
                 borrowable,
             };
             let (quoted_collateral, quoted_debt) = quoter.quote();
-            let (collateral_value, debt_value) = self.initial_values(quoted_collateral, quoted_debt);
+            let valuator = logic::Valuator {
+                margin: self.initial_margin,
+                haircut: self.initial_haircut,
+                quoted_collateral,
+                quoted_debt,
+            };
+            let (collateral_value, debt_value) = valuator.values();
 
             //Collateral must be updated before update
             //Inside update_all, we call next, so it is possible to reenter withdraw
@@ -575,7 +563,13 @@ mod finance2 {
             };
             let (quoted_collateral, quoted_debt) = qouter.quote();
 
-            let (collateral_value, debt_value) = self.initial_values(quoted_collateral, quoted_debt);
+            let valuator = logic::Valuator {
+                margin: self.initial_margin,
+                haircut: self.initial_haircut,
+                quoted_collateral,
+                quoted_debt,
+            };
+            let (collateral_value, debt_value) = valuator.values();
             
             //it is crucial to update those three variables together
             self.borrowable = new_borrowable;
