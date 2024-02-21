@@ -78,6 +78,10 @@ impl Quoter {
             ceil_up(w, self.price_scaler).unwrap_or(u128::MAX)
         }
     }
+    pub fn dequote(&self, qouted: u128) -> u128 {
+        let w = mulw(qouted, self.price_scaler);
+        div(w, self.price).unwrap_or(u128::MAX)
+    }
 }
 
 pub struct Accruer {

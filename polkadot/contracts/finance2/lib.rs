@@ -13,7 +13,7 @@ mod tests;
 #[ink::trait_definition]
 pub trait LAsset {
     #[ink(message)]
-    fn update(&mut self, user: AccountId) -> (AccountId, u128, u128);
+    fn update(&mut self, user: AccountId) -> (AccountId, u128, u128, u128, u128);
 
     #[ink(message)]
     fn repay(&mut self, user: AccountId, amount: u128, cash: u128, cash_owner: AccountId) -> Result<(AccountId, u128, u128, u128, u128, u128), LAssetError>;
@@ -139,13 +139,13 @@ mod finance2 {
         }
 
         #[cfg(not(test))]
-        fn update_next(&self, next: &AccountId, user: &AccountId) -> (AccountId, u128, u128) {
+        fn update_next(&self, next: &AccountId, user: &AccountId) -> (AccountId, u128, u128, u128, u128) {
             let mut next: contract_ref!(LAsset) = (*next).into();
             next.update(*user)
         }
 
         #[cfg(test)]
-        fn update_next(&self, next: &AccountId, user: &AccountId) -> (AccountId, u128, u128) {
+        fn update_next(&self, next: &AccountId, user: &AccountId) -> (AccountId, u128, u128, u128, u128) {
             unsafe {
                 if *next == AccountId::from([0x1; 32]) {
                     return L_BTC.as_mut().unwrap().update(*user);
@@ -347,7 +347,7 @@ mod finance2 {
             //inline update_all
             let mut next = self.next;
             while next != this {
-                let (next2, next_collateral_value, next_debt_value) = self.update_next(&next, &caller);
+                let (next2, next_collateral_value, next_debt_value, _, _) = self.update_next(&next, &caller);
                 next = next2;
                 collateral_value = collateral_value.saturating_add(next_collateral_value);
                 debt_value = debt_value.saturating_add(next_debt_value);
@@ -610,7 +610,7 @@ mod finance2 {
 
             let mut next = self.next;
             while next != current {
-                let (next2, next_collateral_value, next_debt_value) = self.update_next(&next, &caller);
+                let (next2, next_collateral_value, next_debt_value, _, _) = self.update_next(&next, &caller);
                 next = next2;
                 collateral_value = collateral_value.saturating_add(next_collateral_value);
                 debt_value = debt_value.saturating_add(next_debt_value);
@@ -636,6 +636,10 @@ mod finance2 {
         pub fn liquidate(&mut self, user: AccountId, repay_asset: AccountId, repay_underlying: AccountId, amount: u128, cash: u128) -> Result<(), LAssetError> {
             let caller = self.env().caller();
             let this = self.env().account_id();
+            if this == repay_asset {
+                return Err(LAssetError::LiquidateSelf);
+            }
+
             if let Err(e) = self.transfer_from_underlying(repay_underlying, caller, this, cash) {
                 Err(LAssetError::LiquidateTransferFailed(e))
             } else {
@@ -646,11 +650,106 @@ mod finance2 {
             } else {
                 Ok(())
             }?;
-            //repay
-            //update all
-            //withdraw collateral
+            let (repay_next, repaid, mut initial_collateral_value, mut initial_debt_value, mut maintenance_collateral_value, mut maintenance_debt_value) = self.repay_any(repay_asset, user, amount, cash, caller)?;
+            
+            let updated_at = self.updated_at;
+            let timestamp = self.env().block_timestamp();
+            let now = logic::get_now(timestamp, updated_at);
+            let borrowable = self.borrowable;
 
-            Ok(())
+            let accruer = logic::Accruer {
+                now,
+                updated_at,
+                liquidity: self.liquidity,
+                borrowable,
+                standard_rate: self.standard_rate,
+                emergency_rate: self.emergency_rate,
+                standard_min_rate: self.standard_min_rate,
+                emergency_max_rate: self.emergency_max_rate,
+            };
+            let liquidity = accruer.accrue();
+            let collateral = if let Some(c) = self.collateral.get(user) {
+                Ok(c)
+            } else {
+                Err(LAssetError::LiquidateForNothing)
+            }?;
+            let borrowed = self.borrowed.get(user).unwrap_or(0);
+            let quoter = logic::Quoter {
+                price: self.price,
+                price_scaler: self.price_scaler,
+                borrowed,
+                borrows: self.borrows,
+                liquidity,
+            };
+            let delta_collateral = quoter.dequote(repaid);
+            let new_collateral = if let Some(r) = collateral.checked_sub(delta_collateral) {
+                Ok(r)
+            } else {
+                Err(LAssetError::LiquidateCollateralOverflow)
+            }?;
+            let new_collaterals = sub(self.collaterals, delta_collateral);
+
+            self.collaterals = new_collaterals;
+            self.collateral.insert(user, &new_collateral);
+
+            self.liquidity = liquidity;
+            self.updated_at = now;
+
+            let quoted_old_collateral = quoter.quote(collateral);
+            let quoted_collateral = quoter.quote(new_collateral);
+            let borrowable = self.borrowable;
+            let quoted_debt = quoter.quote(borrowable);
+            
+            let initial_valuator = logic::Valuator {
+                margin: self.initial_margin,
+                haircut: self.initial_haircut,
+                quoted_collateral,
+                quoted_debt,
+            };
+            let (initial_collateral_value_delta, initial_debt_value_delta) = initial_valuator.values();
+            initial_collateral_value = initial_collateral_value.saturating_add(initial_collateral_value_delta);
+            initial_debt_value = initial_debt_value.saturating_add(initial_debt_value_delta);
+
+            let mainteneance_valuator = logic::Valuator {
+                margin: self.maintenance_margin,
+                haircut: self.maintenance_haircut,
+                quoted_collateral: quoted_old_collateral,
+                quoted_debt,
+            };
+            let (maintenance_collateral_value_delta, maintenance_debt_value_delta) = mainteneance_valuator.values();
+            maintenance_collateral_value = maintenance_collateral_value.saturating_add(maintenance_collateral_value_delta);
+            maintenance_debt_value = maintenance_debt_value.saturating_add(maintenance_debt_value_delta);
+
+            let mut invalid = true;
+            let mut next = self.next;
+            while next != this {
+                if next == repay_asset {
+                    next = repay_next;
+                    invalid = false;
+                    continue;
+                }
+                let (next2, next_initial_collateral_value, next_initial_debt_value, next_maintenance_collateral_value, next_maintenance_debt_value) = self.update_next(&next, &user);
+                next = next2;
+                initial_collateral_value = initial_collateral_value.saturating_add(next_initial_collateral_value);
+                initial_debt_value = initial_debt_value.saturating_add(next_initial_debt_value);
+                maintenance_collateral_value = maintenance_collateral_value.saturating_add(next_maintenance_collateral_value);
+                maintenance_debt_value = maintenance_debt_value.saturating_add(next_maintenance_debt_value);
+            }
+            if invalid {
+                return Err(LAssetError::LiquidateInvalid);
+            }
+            if maintenance_collateral_value >= maintenance_debt_value {
+                return Err(LAssetError::LiquidateTooEarly);
+            }
+            if initial_collateral_value >= initial_debt_value {
+                return Err(LAssetError::LiquidateTooMuch);
+            } 
+
+            if let Err(e) = self.transfer_underlying(caller, delta_collateral) {
+                Err(LAssetError::LiquidateTransferFailed(e))
+            } else {
+                Ok(())
+            }
 
         }
     }
@@ -732,7 +831,7 @@ mod finance2 {
                 price_scaler: self.price_scaler,
                 borrowed: new_borrowed,
                 borrows: new_borrows,
-                liquidity: liquidity,
+                liquidity,
             };
             let collateral = self.collateral.get(user).unwrap_or(0);
             
@@ -762,7 +861,7 @@ mod finance2 {
         }
 
         #[ink(message)]
-        fn update(&mut self, user: AccountId) -> (AccountId, u128, u128) {
+        fn update(&mut self, user: AccountId) -> (AccountId, u128, u128, u128, u128) {
             let updated_at = self.updated_at;
             let now = self.get_now(updated_at);
             let collateral = self.collateral.get(user).unwrap_or(0);
@@ -781,6 +880,10 @@ mod finance2 {
                 emergency_max_rate: self.emergency_max_rate,
             };
             let liquidity = accruer.accrue();
+
+            self.updated_at = now;
+            self.liquidity = liquidity;
+
             let quoter = logic::Quoter {
                 price: self.price,
                 price_scaler: self.price_scaler,
@@ -797,12 +900,16 @@ mod finance2 {
                 quoted_debt,
             };
             let (collateral_value, debt_value) = valuator.values();
-
-            self.updated_at = now;
-            self.liquidity = liquidity;
+            let maintenance_valuator = logic::Valuator {
+                margin: self.maintenance_margin,
+                haircut: self.maintenance_haircut,
+                quoted_collateral,
+                quoted_debt,
+            };
+            let (maintenance_collateral_value, maintenance_debt_value) = maintenance_valuator.values();
 
             let next = self.next;
-            (next, collateral_value, debt_value)
+            (next, collateral_value, debt_value, maintenance_collateral_value, maintenance_debt_value)
         }
     }
 

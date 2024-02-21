@@ -36,6 +36,11 @@ pub enum LAssetError {
     LiquidateTransferFailed(PSP22Error),
     LiquidateApproveFailed(PSP22Error),
     LiquidateForNothing,
+    LiquidateSelf,
+    LiquidateInvalid,
+    LiquidateTooMuch,
+    LiquidateTooEarly,
+    LiquidateCollateralOverflow,
 
     ForceRepayTransferFailed(PSP22Error),
     ForceRepayWithoutBorrow,
