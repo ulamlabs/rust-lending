@@ -57,29 +57,26 @@ pub fn get_now(block_timestamp: u64, updated_at: u64) -> u64 {
 pub struct Quoter {
     pub price: u128,
     pub price_scaler: u128,
-    pub collateral: u128,
     pub borrowed: u128,
     pub borrows: u128,
     pub liquidity: u128,
-    pub borrowable: u128,
 }
 impl Quoter {
-    pub fn quote(self) -> (u128, u128) {
-        let quoted_collateral = {
-            let w = mulw(self.collateral, self.price);
-            div(w, self.price_scaler).unwrap_or(u128::MAX)
-        };
-        let debt = sub(self.liquidity, self.borrowable);
-
+    pub fn quote(&self, collateral: u128) -> u128 {
+        let w = mulw(collateral, self.price);
+        div(w, self.price_scaler).unwrap_or(u128::MAX)
+    }
+    pub fn quote_debt(&self, borrowable: u128) -> u128 {
+        let debt = sub(self.liquidity, borrowable);
+    
         let user_debt = {
             let w = mulw(self.borrowed, debt);
             ceil_up(w, self.borrows).unwrap_or(debt)
         };
-        let quoted_debt = {
+        {
             let w = mulw(user_debt, self.price);
             ceil_up(w, self.price_scaler).unwrap_or(u128::MAX)
-        };
-        (quoted_collateral, quoted_debt)
+        }
     }
 }
 

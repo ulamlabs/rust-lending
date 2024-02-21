@@ -295,13 +295,12 @@ mod finance2 {
             let quoter = logic::Quoter {
                 price: self.price,
                 price_scaler: self.price_scaler,
-                collateral: new_collateral,
                 borrowed,
                 borrows,
                 liquidity,
-                borrowable,
             };
-            let (quoted_collateral, quoted_debt) = quoter.quote();
+            let quoted_collateral = quoter.quote(new_collateral);
+            let quoted_debt = quoter.quote_debt(borrowable);
             let valuator = logic::Valuator {
                 margin: self.initial_margin,
                 haircut: self.initial_haircut,
@@ -559,16 +558,15 @@ mod finance2 {
             }?;
             let new_borrowed = add(borrowed, minted);
             
-            let qouter = logic::Quoter {
+            let quoter = logic::Quoter {
                 price: self.price,
                 price_scaler: self.price_scaler,
-                collateral,
                 borrowed: new_borrowed,
                 borrows: new_borrows,
-                liquidity: liquidity,
-                borrowable: new_borrowable,
+                liquidity,
             };
-            let (quoted_collateral, quoted_debt) = qouter.quote();
+            let quoted_collateral = quoter.quote(collateral);
+            let quoted_debt = quoter.quote_debt(new_borrowable);
 
             let valuator = logic::Valuator {
                 margin: self.initial_margin,
@@ -609,7 +607,7 @@ mod finance2 {
         }
 
         #[ink(message)]
-        pub fn repay(&mut self, user: AccountId, amount: u128, cash: u128, cash_owner: AccountId) -> Result<(), LAssetError> {
+        pub fn repay(&mut self, user: AccountId, amount: u128, cash: u128, cash_owner: AccountId) -> Result<(AccountId, u128, u128, u128, u128, u128), LAssetError> {
             //You can repay for yourself only
             let caller = self.env().caller();
             let this = self.env().account_id();
@@ -652,11 +650,11 @@ mod finance2 {
             
             let new_debt = sub(liquidity, borrowable);
             let borrows = self.borrows;
-            let repayed = {
+            let repaid = {
                 let w = mulw(amount, new_debt);
                 ceil_rate(w, borrows).unwrap_or(0)
             };
-            let extra_cash = if let Some(r) = cash.checked_sub(repayed) {
+            let extra_cash = if let Some(r) = cash.checked_sub(repaid) {
                 Ok(r)
             } else {
                 Err(LAssetError::RepayInsufficientCash)
@@ -668,10 +666,9 @@ mod finance2 {
             } else {
                 Err(LAssetError::RepayCashOverflow)
             }?;
-            let new_borrowable = add(borrowable, repayed);
+            let new_borrowable = add(borrowable, repaid);
             let new_borrows = sub(borrows, amount);
 
-            //it is crucial to update those three variables together
             self.cash.insert(cash_owner, &new_cash);
             self.borrowable = new_borrowable;
             self.borrows = new_borrows;
@@ -680,8 +677,40 @@ mod finance2 {
             self.liquidity = liquidity;
             self.updated_at = now;
 
-            Ok(())
+            let qouter = logic::Quoter {
+                price: self.price,
+                price_scaler: self.price_scaler,
+                borrowed: new_borrowed,
+                borrows: new_borrows,
+                liquidity: liquidity,
+            };
+            let collateral = self.collateral.get(user).unwrap_or(0);
+            
+            let quoted_collateral = qouter.quote(collateral);
+            let quoted_debt = qouter.quote_debt(new_borrowable);
+            let initial_valuator = logic::Valuator {
+                margin: self.initial_margin,
+                haircut: self.initial_haircut,
+                quoted_collateral,
+                quoted_debt,
+            };
+            let (initial_collateral_value, initial_debt_value) = initial_valuator.values();
+            
+            let quoted_old_debt = qouter.quote_debt(borrowable);
+            let maintenance_valuator = logic::Valuator {
+                margin: self.maintenance_margin,
+                haircut: self.maintenance_haircut,
+                quoted_collateral,
+                quoted_debt: quoted_old_debt,
+            };
+            let (maintenance_collateral_value, maintenance_debt_value) = maintenance_valuator.values();
+
+            let qouted_repaid = qouter.quote(repaid);
+            let next = self.next;
+            
+            Ok((next, qouted_repaid, initial_collateral_value, initial_debt_value, maintenance_collateral_value, maintenance_debt_value))
         }
+
 
         #[ink(message)]
         pub fn liquidate(&mut self, user: AccountId, repay_asset: AccountId, repay_underlying: AccountId, amount: u128, cash: u128) -> Result<(), LAssetError> {
@@ -727,17 +756,15 @@ mod finance2 {
                 emergency_max_rate: self.emergency_max_rate,
             };
             let liquidity = accruer.accrue();
-            let quot = logic::Quoter {
+            let quoter = logic::Quoter {
                 price: self.price,
                 price_scaler: self.price_scaler,
-                collateral,
                 borrowed,
                 borrows,
                 liquidity,
-                borrowable,
             };
-
-            let (quoted_collateral, quoted_debt) = quot.quote();
+            let quoted_collateral = quoter.quote(collateral);
+            let quoted_debt = quoter.quote_debt(borrowable);
             let valuator = logic::Valuator {
                 margin: self.initial_margin,
                 haircut: self.initial_haircut,
