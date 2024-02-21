@@ -67,3 +67,43 @@ impl Quoter {
         (quoted_collateral, quoted_debt)
     }
 }
+
+pub struct Accruer {
+    pub now: u64,
+    pub updated_at: u64,
+    pub liquidity: u128,
+    pub borrowable: u128,
+    pub standard_rate: u128,
+    pub emergency_rate: u128,
+    pub standard_min_rate: u128,
+    pub emergency_max_rate: u128,
+}
+impl Accruer {
+    pub fn accrue(self) -> u128 {
+        let delta = sub(self.now as u128, self.updated_at as u128);
+        let standard_matured = self.standard_rate.saturating_mul(delta);
+        let emergency_matured = self.emergency_rate.saturating_mul(delta);
+
+        let debt = sub(self.liquidity, self.borrowable);
+
+        let standard_scaled = {
+            let w = mulw(standard_matured, debt);
+            div_rate(w, self.liquidity).unwrap_or(0)
+        };
+        let emergency_scaled = {
+            let w = mulw(emergency_matured, self.borrowable);
+            div_rate(w, self.liquidity).unwrap_or(0)
+        };
+
+        let standard_final = standard_scaled.saturating_add(self.standard_min_rate);
+        let emergency_final = self.emergency_max_rate.saturating_sub(emergency_scaled);
+
+        let interest_rate = standard_final.max(emergency_final);
+        let interest = {
+            let w = mulw(debt, interest_rate);
+            scale(w)
+        };
+
+        self.liquidity.saturating_add(interest)
+    }
+}

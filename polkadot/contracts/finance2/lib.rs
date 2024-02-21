@@ -180,11 +180,9 @@ mod finance2 {
             mut next: AccountId, 
             current: &AccountId, 
             user: &AccountId,
-            collateral_value: u128,
-            debt_value: u128,
+            mut total_collateral_value: u128,
+            mut total_debt_value: u128,
         ) -> Result<(), LAssetError> {
-            let mut total_collateral_value = collateral_value;
-            let mut total_debt_value = debt_value;
             while next != *current {
                 //It is possible to reentract inside update_next, but it is not a problem
                 //Because result of update_next is used only to accept the update
@@ -201,44 +199,6 @@ mod finance2 {
                 Ok(())
             }
         }
-
-        fn increase_liquidity(
-            &self,
-            now: Timestamp, 
-            updated_at: Timestamp,
-            liquidity: u128,
-            borrowable: u128,
-        ) -> u128 {
-            //impossible to overflow, because now >= updated_at
-            let delta = sub(now as u128, updated_at as u128);
-    
-            //TODO: refactor to struct Rates and pass it by argument
-            let standard_matured = self.standard_rate.saturating_mul(delta);
-            let emergency_matured = self.emergency_rate.saturating_mul(delta);
-
-            let debt = sub(liquidity, borrowable);
-    
-            let standard_scaled = {
-                let w = mulw(standard_matured, debt);
-                div_rate(w, liquidity).unwrap_or(0)
-            };
-            let emergency_scaled = {
-                let w = mulw(emergency_matured, borrowable);
-                div_rate(w, liquidity).unwrap_or(0)
-            };
-    
-            let standard_final = standard_scaled.saturating_add(self.standard_min_rate);
-            let emergency_final = self.emergency_max_rate.saturating_sub(emergency_scaled);
-    
-            let interest_rate = standard_final.max(emergency_final);
-            let interest = {
-                let w = mulw(debt, interest_rate);
-                scale(w)
-            };
-    
-            liquidity.saturating_add(interest)
-        }
-
         fn initial_values(
             &self,
             collateral_price: u128,
@@ -351,8 +311,17 @@ mod finance2 {
             let borrowable = self.borrowable;
             let borrows = self.borrows;
 
-            //Impossible to overflow, proofs/collateral.py for proof
-            let new_liquidity = self.increase_liquidity(now, updated_at, self.liquidity, borrowable);
+            let accruer = logic::Accruer {
+                now,
+                updated_at,
+                liquidity: self.liquidity,
+                borrowable,
+                standard_rate: self.standard_rate,
+                emergency_rate: self.emergency_rate,
+                standard_min_rate: self.standard_min_rate,
+                emergency_max_rate: self.emergency_max_rate,
+            };
+            let new_liquidity = accruer.accrue();
 
             let quoter = logic::Quoter {
                 price: self.price,
@@ -409,24 +378,34 @@ mod finance2 {
             let updated_at = self.updated_at;
             let now = self.get_now(updated_at);
             let borrowable = self.borrowable;
-            let total_liquidity = self.increase_liquidity(now, updated_at, self.liquidity, borrowable);
+            let accruer = logic::Accruer {
+                now,
+                updated_at,
+                liquidity: self.liquidity,
+                borrowable,
+                standard_rate: self.standard_rate,
+                emergency_rate: self.emergency_rate,
+                standard_min_rate: self.standard_min_rate,
+                emergency_max_rate: self.emergency_max_rate,
+            };
+            let liquidity = accruer.accrue();
 
-            let total_shares = self.shares;
+            let shares = self.shares;
             //First mint does not require any extra actions
-            let shares = self.share.get(caller).unwrap_or(0);
+            let share = self.share.get(caller).unwrap_or(0);
 
-            let new_total_liquidity = {
-                let r = total_liquidity.checked_add(amount);
+            let new_liquidity = {
+                let r = liquidity.checked_add(amount);
                 r.ok_or(LAssetError::MintLiquidityOverflow)
             }?;
             let minted = {
-                let w = mulw(amount, total_shares);
-                if let Some(m) = div_rate(w, total_liquidity) {
+                let w = mulw(amount, shares);
+                if let Some(m) = div_rate(w, liquidity) {
                     Ok(m)
                 } else {
                     // First shares are scalled by 2^16. It limits total_shares to 2^112
-                    if let Some(first_shares) = amount.checked_shl(16) {
-                        Ok(first_shares)
+                    if let Some(first) = amount.checked_shl(16) {
+                        Ok(first)
                     } else {
                         Err(LAssetError::MintOverflow)
                     }
@@ -434,15 +413,15 @@ mod finance2 {
             }?;
             
             //impossible to overflow IF total_liquidity is tracked correctly
+            let new_share = add(share, minted);
             let new_shares = add(shares, minted);
-            let new_total_shares = add(total_shares, minted);
-            let new_total_borrowable = add(borrowable, amount);
+            let new_borrowable = add(borrowable, amount);
 
             //it is crucial to update those four variables together
-            self.liquidity = new_total_liquidity;
-            self.shares = new_total_shares;
-            self.share.insert(caller, &new_shares);
-            self.borrowable = new_total_borrowable;
+            self.liquidity = new_liquidity;
+            self.shares = new_shares;
+            self.share.insert(caller, &new_share);
+            self.borrowable = new_borrowable;
 
             self.updated_at = now;
 
@@ -460,7 +439,17 @@ mod finance2 {
             let now = logic::get_now(timestamp, updated_at);
 
             let borrowable = self.borrowable;
-            let liquidity = self.increase_liquidity(now, updated_at, self.liquidity, borrowable);
+            let accruer = logic::Accruer {
+                now,
+                updated_at,
+                liquidity: self.liquidity,
+                borrowable,
+                standard_rate: self.standard_rate,
+                emergency_rate: self.emergency_rate,
+                standard_min_rate: self.standard_min_rate,
+                emergency_max_rate: self.emergency_max_rate,
+            };
+            let liquidity = accruer.accrue();
 
             let shares = self.shares;
             //Burn without mint is useless, but not forbidden
@@ -523,16 +512,27 @@ mod finance2 {
             let current = self.env().account_id();
             
             let borrowable = self.borrowable;
-            let new_liquidity = self.increase_liquidity(now, updated_at, self.liquidity, borrowable);
+            let accruer = logic::Accruer {
+                now,
+                updated_at,
+                liquidity: self.liquidity,
+                borrowable,
+                standard_rate: self.standard_rate,
+                emergency_rate: self.emergency_rate,
+                standard_min_rate: self.standard_min_rate,
+                emergency_max_rate: self.emergency_max_rate,
+            };
+            let new_liquidity = accruer.accrue();
 
-            let borrows = self.borrows;
-            let debt = sub(new_liquidity, borrowable);
 
             let new_borrowable = if let Some(r) = borrowable.checked_sub(amount) {
                 Ok(r)
             } else {
                 Err(LAssetError::BorrowableOverflow)
             }?;
+
+            let borrows = self.borrows;
+            let debt = sub(new_liquidity, borrowable);
             //Number of borrowed shares would be reduced by division precision
             //It is not wanted, because it would lead to situation, when
             //caller could borrow some liquidity without minting any shares
@@ -543,8 +543,8 @@ mod finance2 {
                     Ok(m)
                 } else {
                     // First minted are scaled by 2^16. It limits borrows to 2^112
-                    if let Some(first_minted) = amount.checked_shl(16) {
-                        Ok(first_minted)
+                    if let Some(first) = amount.checked_shl(16) {
+                        Ok(first)
                     } else {
                         Err(LAssetError::BurnOverflow)
                     }
@@ -626,7 +626,17 @@ mod finance2 {
             }?;
 
             let borrowable = self.borrowable;
-            let liquidity = self.increase_liquidity(now, updated_at, self.liquidity, borrowable);
+            let accruer = logic::Accruer {
+                now,
+                updated_at,
+                liquidity: self.liquidity,
+                borrowable,
+                standard_rate: self.standard_rate,
+                emergency_rate: self.emergency_rate,
+                standard_min_rate: self.standard_min_rate,
+                emergency_max_rate: self.emergency_max_rate,
+            };
+            let liquidity = accruer.accrue();
             
             let new_debt = sub(liquidity, borrowable);
             let borrows = self.borrows;
@@ -672,7 +682,17 @@ mod finance2 {
             let borrows = self.borrows;
             let borrowable = self.borrowable;
             
-            let liquidity = self.increase_liquidity(now, updated_at, self.liquidity, borrowable);
+            let accruer = logic::Accruer {
+                now,
+                updated_at,
+                liquidity: self.liquidity,
+                borrowable,
+                standard_rate: self.standard_rate,
+                emergency_rate: self.emergency_rate,
+                standard_min_rate: self.standard_min_rate,
+                emergency_max_rate: self.emergency_max_rate,
+            };
+            let liquidity = accruer.accrue();
             let quot = logic::Quoter {
                 price: self.price,
                 price_scaler: self.price_scaler,
