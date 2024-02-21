@@ -17,8 +17,6 @@ pub trait LAsset {
 
 #[ink::contract]
 mod finance2 {
-    use core::time;
-
     #[cfg(not(test))]
     use ink::contract_ref;
     use ink::prelude::vec::Vec;
@@ -273,13 +271,11 @@ mod finance2 {
         }
 
         fn quote(&self, 
-            user: &AccountId,
-            now: Timestamp,
-            updated_at: Timestamp,
             collateral: u128,
             borrowed: u128,
             borrows: u128,
-            debt: u128,
+            liquidity: u128,
+            borrowable: u128,
         ) -> (u128, u128) {
             let price = self.price;
             let price_scaler = self.price_scaler;
@@ -288,11 +284,11 @@ mod finance2 {
                 let w = mulw(collateral, price);
                 div(w, price_scaler).unwrap_or(u128::MAX)
             };
+            let debt = sub(liquidity, borrowable);
 
-            let total_borrow_shares = self.borrows;
             let user_debt = {
                 let w = mulw(borrowed, debt);
-                div_rate(w, total_borrow_shares).unwrap_or(0)
+                div_rate(w, borrows).unwrap_or(0)
             };
             let quoted_debt = {
                 let w = mulw(user_debt, price);
@@ -414,11 +410,9 @@ mod finance2 {
             let borrows = self.borrows;
 
             //Impossible to overflow, proofs/collateral.py for proof
-            let new_collateral = sub(self.collaterals, amount);
             let new_liquidity = self.increase_liquidity(now, updated_at, self.liquidity, borrowable);
-            let new_debt = sub(new_liquidity, borrowable);
 
-            let (quoted_collateral, quoted_debt) = self.quote(&caller, now, updated_at, new_collateral, borrowed, borrows, new_debt);
+            let (quoted_collateral, quoted_debt) = self.quote(new_collateral, borrowed, borrows, new_liquidity, borrowable);
             let (collateral_value, debt_value) = self.initial_values(quoted_collateral, quoted_debt);
 
             //Collateral must be updated before update
@@ -608,21 +602,18 @@ mod finance2 {
 
             let borrowed = if let Some(borrowed) = self.borrowed.get(caller) {
                 Ok(borrowed)
+            } else if self.env().transferred_value() != GAS_COLLATERAL {
+                Err(LAssetError::FirstBorrowRequiresGasCollateral)
             } else {
-                if self.env().transferred_value() != GAS_COLLATERAL {
-                    Err(LAssetError::FirstBorrowRequiresGasCollateral)
-                } else {
-                    Ok(0)
-                }
+                Ok(0)
             }?;
 
             let collateral = self.collateral.get(caller).unwrap_or(0);
             
             let new_borrowed = add(borrowed, minted);
             let new_borrows = add(borrows, minted);
-            let new_debt = sub(new_liquidity, new_borrowable);
             
-            let (quoted_collateral, quoted_debt) = self.quote(&caller, now, updated_at, collateral, new_borrowed, new_borrows, new_debt);
+            let (quoted_collateral, quoted_debt) = self.quote(collateral, new_borrowed, new_borrows, new_liquidity, new_borrowable);
 
             let (collateral_value, debt_value) = self.initial_values(quoted_collateral, quoted_debt);
             
@@ -722,8 +713,7 @@ mod finance2 {
             let borrowable = self.borrowable;
             
             let liquidity = self.increase_liquidity(now, updated_at, self.liquidity, borrowable);
-            let new_debt = sub(liquidity, borrowable);
-            let (quoted_collateral, quoted_debt) = self.quote(&user, now, updated_at, collateral, borrowed, borrows, new_debt);
+            let (quoted_collateral, quoted_debt) = self.quote(collateral, borrowed, borrows, liquidity, borrowable);
             let (collateral_value, debt_value) = self.initial_values(quoted_collateral, quoted_debt);
 
             self.updated_at = now;
