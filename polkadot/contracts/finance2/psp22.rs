@@ -153,3 +153,13 @@ pub trait PSP22 {
         delta_value: u128,
     ) -> Result<(), PSP22Error>;
 }
+
+#[ink::trait_definition]
+pub trait PSP22Metadata {
+    #[ink(message)]
+    fn token_name(&self) -> Option<String>;
+    #[ink(message)]
+    fn token_symbol(&self) -> Option<String>;
+    #[ink(message)]
+    fn token_decimals(&self) -> u8;
+}

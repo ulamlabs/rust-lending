@@ -19,6 +19,7 @@ pub trait LAsset {
     fn repay(&mut self, user: AccountId, amount: u128, cash: u128, cash_owner: AccountId) -> Result<(AccountId, u128, u128, u128, u128, u128), LAssetError>;
 }
 
+
 #[ink::contract]
 mod finance2 {
     #[cfg(not(test))]
@@ -29,6 +30,7 @@ mod finance2 {
 
     //Solving problem with small borrows/deposits
     const GAS_COLLATERAL: u128 = 1_000_000; // TODO find something less random
+    const DEFAULT_DECIMALS: u8 = 6;
 
     // fn scale_up(a: U256) -> u128 {
     //     let c = !a.is_zero() as u128;
@@ -36,7 +38,9 @@ mod finance2 {
     // }
 
     use ink::storage::Mapping;
-    use crate::{errors::LAssetError, psp22::{PSP22Error, Transfer, Approval, PSP22}, LAsset};
+    use crate::LAsset;
+    use crate::errors::LAssetError;
+    use crate::psp22::{PSP22Error, PSP22Metadata, Transfer, Approval, PSP22};
 
     #[ink(storage)]
     pub struct LAssetContract {
@@ -83,6 +87,11 @@ mod finance2 {
         price_scaler: u128,
 
         cash: Mapping<AccountId, u128>,
+
+        // PSP22Metadata
+        name: Option<String>,
+        symbol: Option<String>,
+        decimals: u8,
     }
 
     #[cfg(test)]
@@ -110,6 +119,8 @@ mod finance2 {
             maintenance_haircut: u128,
             price: u128,
         ) -> Self {
+            let (name, symbol, decimals) = fetch_psp22_metadata(underlying_token);
+
             Self { 
                 admin,
                 underlying_token,
@@ -135,6 +146,9 @@ mod finance2 {
                 price,
                 price_scaler: 1,
                 cash: Mapping::new(),
+                name,
+                symbol,
+                decimals,
              }
         }
 
@@ -1039,5 +1053,50 @@ mod finance2 {
             self.env().emit_event(event);
             Ok(())
         }
-    }    
+    }
+
+    impl PSP22Metadata for LAssetContract {
+        #[ink(message)]
+        fn token_name(&self) -> Option<String> {
+            self.name.clone()
+        }
+
+        #[ink(message)]
+        fn token_symbol(&self) -> Option<String> {
+            self.symbol.clone()
+        }
+
+        #[ink(message)]
+        fn token_decimals(&self) -> u8 {
+            self.decimals
+        }
+    } 
+
+    #[cfg(not(test))]
+    /// If the asset is not compatible with PSP22Metadata, the decimals will be set to 6
+    fn fetch_psp22_metadata(token: AccountId) -> (Option<String>, Option<String>, u8) {
+        use ink::codegen::TraitCallBuilder;
+        use ink::prelude::string::String;
+        let token: contract_ref!(PSP22Metadata) = token.into();
+        let name = token.call().token_name().transferred_value(0).try_invoke().unwrap_or(Ok(None)).unwrap_or(None);
+        let symbol = token.call().token_symbol().transferred_value(0).try_invoke().unwrap_or(Ok(None)).unwrap_or(None);
+        let decimals = token.call().token_decimals().transferred_value(0).try_invoke().unwrap_or(Ok(DEFAULT_DECIMALS)).unwrap_or(DEFAULT_DECIMALS);
+
+        let l_name = match name {
+            Some(n) => Some(String::from("L-") + &n),
+            None => None
+        };
+        let l_symbol = match symbol {
+            Some(s) => Some(String::from("L-") + &s),
+            None => None
+        };
+
+        (l_name, l_symbol, decimals)
+    }
+
+    #[cfg(test)]
+    fn fetch_psp22_metadata(token: AccountId) -> (Option<String>, Option<String>, u8) {
+        (Some("L-TestToken".to_string()), Some("L-TT".to_string()), 16)
+    }
+
 }
