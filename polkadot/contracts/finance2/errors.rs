@@ -44,4 +44,10 @@ pub enum LAssetError {
 
     ForceRepayTransferFailed(PSP22Error),
     ForceRepayWithoutBorrow,
+
+    IncreaseCashOverflow,
+    IncreaseCashTransferFailed(PSP22Error),
+
+    RepayNotWhitelisted,
+    RepayInvalidCaller,
 }
