@@ -719,9 +719,7 @@ mod finance2 {
                 quoted_collateral,
                 quoted_debt,
             };
-            let (initial_collateral_value_delta, initial_debt_value_delta) = initial_valuator.values();
-            initial_collateral_value = initial_collateral_value.saturating_add(initial_collateral_value_delta);
-            initial_debt_value = initial_debt_value.saturating_add(initial_debt_value_delta);
+            let (mut initial_collateral_value, mut initial_debt_value) = initial_valuator.values();
 
             let mainteneance_valuator = logic::Valuator {
                 margin: self.maintenance_margin,
@@ -729,9 +727,8 @@ mod finance2 {
                 quoted_collateral: quoted_old_collateral,
                 quoted_debt,
             };
-            let (maintenance_collateral_value_delta, maintenance_debt_value_delta) = mainteneance_valuator.values();
-            maintenance_collateral_value = maintenance_collateral_value.saturating_add(maintenance_collateral_value_delta);
-            maintenance_debt_value = maintenance_debt_value.saturating_add(maintenance_debt_value_delta);
+            let (mut maintenance_collateral_value, mut maintenance_debt_value) = mainteneance_valuator.values();
+
 
             if maintenance_collateral_value >= maintenance_debt_value {
                 return Err(LAssetError::LiquidateTooEarly);
