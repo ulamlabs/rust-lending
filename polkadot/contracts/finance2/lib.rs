@@ -381,7 +381,7 @@ mod finance2 {
 
             //To prevent reentrancy attack, we have to transfer tokens first
             self.transfer_from_underlying(self.underlying_token, caller, this, amount)
-                .map_err(| e | LAssetError::MintTransferFailed(e))?;
+                .map_err(LAssetError::MintTransferFailed)?;
 
             let updated_at = self.updated_at;
             let now = logic::get_now(
@@ -489,7 +489,7 @@ mod finance2 {
 
             self.updated_at = now;
 
-            self.transfer_underlying(caller, to_withdraw).map_err(|e| LAssetError::BurnTransferFailed(e))?;
+            self.transfer_underlying(caller, to_withdraw).map_err(LAssetError::BurnTransferFailed)?;
             // Some shares were burned
             self.env().emit_event(Transfer {from: Some(caller), to: None, value: amount});
 
@@ -1050,19 +1050,14 @@ mod finance2 {
         let symbol = token.call().token_symbol().transferred_value(0).try_invoke().unwrap_or(Ok(None)).unwrap_or(None);
         let decimals = token.call().token_decimals().transferred_value(0).try_invoke().unwrap_or(Ok(DEFAULT_DECIMALS)).unwrap_or(DEFAULT_DECIMALS);
 
-        let l_name = match name {
-            Some(n) => Some(String::from("L-") + &n),
-            None => None
-        };
-        let l_symbol = match symbol {
-            Some(s) => Some(String::from("L-") + &s),
-            None => None
-        };
+        let l_name = name.map(|n| String::from("L-") + &n);
+        let l_symbol = symbol.map(|s| String::from("L-") + &s);
 
         (l_name, l_symbol, decimals)
     }
 
     #[cfg(test)]
+    #[allow(unused_variables)]
     fn fetch_psp22_metadata(token: AccountId) -> (Option<String>, Option<String>, u8) {
         (Some("L-TestToken".to_string()), Some("L-TT".to_string()), 16)
     }
