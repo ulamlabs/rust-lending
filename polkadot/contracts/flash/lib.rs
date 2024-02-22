@@ -11,7 +11,10 @@ mod flash {
         pub fee_per_million: u32,
     }
     use ink::contract_ref;
+<<<<<<< HEAD
     use ink::prelude::vec::Vec;
+=======
+>>>>>>> 7bd404f (feat: Flash Loan Contract)
     use traits::{FlashLoanPool, FlashLoanContract, FlashLoanReceiver};
     use traits::psp22::PSP22;
     use traits::errors::LAssetError;
@@ -64,7 +67,7 @@ mod flash {
         #[ink(message)]
         fn set_fee_per_million(&mut self, fee: u32) -> Result<(), LAssetError>  {
             if self.env().caller() != self.fee_admin {
-                return Err(LAssetError::CallerIsNotAdmin);
+                return Err(LAssetError::Unathorized);
             }
             self.fee_per_million = fee;
 
