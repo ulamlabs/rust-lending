@@ -370,8 +370,8 @@ mod finance2 {
             Ok(())
         }
 
-        //In this function amount is number of underlying tokens, not shares
-        //Number of minted shares depends on total liquidity and total shares
+        /// Specify an amount of underlying tokens to deposit and receive pool shares.
+        /// Number of minted shares depends on total liquidity and total shares.
         #[ink(message)]
         pub fn mint(&mut self, amount: u128) -> Result<(), LAssetError> {
             //You can mint for yourself only
