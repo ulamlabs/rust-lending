@@ -33,7 +33,7 @@ pub fn ceil_up(a: U256, b: u128) -> Option<u128> {
         None
     } else {
         let (result, rem) = a.div_mod(U256::from(b));
-        if let Some(x) = result.try_into().ok() {
+        if let Ok(x) = result.try_into() {
             let c = !rem.is_zero() as u128;
             Some(add(x, c))
         } else {
