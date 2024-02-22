@@ -86,9 +86,15 @@ impl Quoter {
             ceil_up(w, self.price_scaler).unwrap_or(u128::MAX)
         }
     }
-    pub fn dequote(&self, qouted: u128) -> u128 {
-        let w = mulw(qouted, self.price_scaler);
-        div(w, self.price).unwrap_or(u128::MAX)
+    pub fn dequote(&self, discount: u128, qouted: u128) -> u128 {
+        let price = {
+            let w = mulw(self.price, discount);
+            scale_up(w)
+        };
+        {
+            let w = mulw(qouted, self.price_scaler);
+            div(w, price).unwrap_or(u128::MAX)
+        }
     }
 }
 
