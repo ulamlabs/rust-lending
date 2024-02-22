@@ -684,6 +684,7 @@ mod finance2 {
                 ) = self.repay_any(next, user, amount, cash, caller)?;
 
                 next = next2;
+                repaid = next_repaid.saturating_add(next_repaid);
                 initial_collateral_value = initial_collateral_value.saturating_add(next_initial_collateral_value);
                 initial_debt_value = initial_debt_value.saturating_add(next_initial_debt_value);
                 maintenance_collateral_value = maintenance_collateral_value.saturating_add(next_maintenance_collateral_value);
@@ -744,7 +745,9 @@ mod finance2 {
                 quoted_collateral,
                 quoted_debt,
             };
-            let (mut initial_collateral_value, mut initial_debt_value) = initial_valuator.values();
+            let (initial_collateral_value_delta, initial_debt_value_delta) = initial_valuator.values();
+            initial_collateral_value = initial_collateral_value.saturating_add(initial_collateral_value_delta);
+            initial_debt_value = initial_debt_value.saturating_add(initial_debt_value_delta);
 
             let mainteneance_valuator = logic::Valuator {
                 margin: self.maintenance_margin,
@@ -752,8 +755,9 @@ mod finance2 {
                 quoted_collateral: quoted_old_collateral,
                 quoted_debt,
             };
-            let (mut maintenance_collateral_value, mut maintenance_debt_value) = mainteneance_valuator.values();
-
+            let (maintenance_collateral_value_delta, maintenance_debt_value_delta) = mainteneance_valuator.values();
+            maintenance_collateral_value = maintenance_collateral_value.saturating_add(maintenance_collateral_value_delta);
+            maintenance_debt_value = maintenance_debt_value.saturating_add(maintenance_debt_value_delta);
 
             if maintenance_collateral_value >= maintenance_debt_value {
                 return Err(LAssetError::LiquidateTooEarly);
@@ -866,7 +870,11 @@ mod finance2 {
                 new_borrowed, 
                 liquidity
             ) = if  caller == valid_caller {
+                let cash = self.cash.get(cash_owner).unwrap_or(0);
+                let new_cash = cash.checked_sub(cash).ok_or(LAssetError::RepayInsufficientCash)?;
+
                 self.whitelist.remove(caller);
+                self.cash.insert(caller, &new_cash);
 
                 self.inner_repay(cash_owner, user, amount, cash, cash_owner, borrowable)?
             } else {
