@@ -116,6 +116,7 @@ mod finance2 {
             flash: AccountId,
             discount: u128,
             price_scaler: u128,
+            flash: AccountId,
         ) -> Self {
             let (name, symbol, decimals) = fetch_psp22_metadata(underlying_token);
             let admin: AccountId = Self::env().caller();
