@@ -25,8 +25,7 @@ mod finance2 {
     #[cfg(not(test))]
     use ink::contract_ref;
     use ink::prelude::vec::Vec;
-    use ink::prelude::vec;
-    use crate::logic::{self, add, ceil_rate, div_rate, mulw, scale, sub};
+    use crate::logic::{self, add, ceil_rate, div_rate, mulw, sub};
 
     //Solving problem with small borrows/deposits
     const GAS_COLLATERAL: u128 = 1_000_000; // TODO find something less random
@@ -195,6 +194,7 @@ mod finance2 {
             token.transfer_from(from, to, value, vec![])
         }
         #[cfg(test)]
+        #[allow(unused_variables)]
         fn transfer_from_underlying(&self, token: AccountId, from: AccountId, to: AccountId, value: u128) -> Result<(), PSP22Error> {
             Ok(())
         }
@@ -205,6 +205,7 @@ mod finance2 {
             token.transfer(to, value, vec![])
         }
         #[cfg(test)]
+        #[allow(unused_variables)]
         fn transfer_underlying(&self, to: AccountId, value: u128) -> Result<(), PSP22Error> {
             Ok(())
         }
@@ -214,21 +215,9 @@ mod finance2 {
             token.approve(to, value)
         }
         #[cfg(test)]
+        #[allow(unused_variables)]
         fn approve_underlying(&self, token: AccountId, to: AccountId, value: u128) -> Result<(), PSP22Error> {
             Ok(())
-        }
-
-        //We are not sure if now can be less than updated_at
-        //It is possible, someone could accrue interest few times for the same period
-        //Also integer overflow could occur and time delta calculation could wrap around
-        //updated_at is updated here, to prevent using that function multiple time in the same message
-        fn get_now(&self, updated_at: Timestamp) -> Timestamp {
-            let now = self.env().block_timestamp();
-            if now < updated_at {
-                updated_at
-            } else {
-                now
-            }
         }
         
         //There function does not require anything
@@ -292,7 +281,10 @@ mod finance2 {
             let this = self.env().account_id();
 
             let updated_at = self.updated_at;
-            let now = self.get_now(updated_at);
+            let now = logic::get_now(
+                self.env().block_timestamp(),
+                updated_at
+            );
 
             let collateral = if let Some(c) = self.collateral.get(caller) {
                 Ok(c)
@@ -388,14 +380,14 @@ mod finance2 {
             let this = self.env().account_id();
 
             //To prevent reentrancy attack, we have to transfer tokens first
-            if let Err(e) = self.transfer_from_underlying(self.underlying_token, caller, this, amount) {
-                Err(LAssetError::MintTransferFailed(e))
-            } else {
-                Ok(())
-            }?;
+            self.transfer_from_underlying(self.underlying_token, caller, this, amount)
+                .map_err(| e | LAssetError::MintTransferFailed(e))?;
 
             let updated_at = self.updated_at;
-            let now = self.get_now(updated_at);
+            let now = logic::get_now(
+                self.env().block_timestamp(),
+                updated_at
+            );
             let borrowable = self.borrowable;
             let accruer = logic::Accruer {
                 now,
@@ -407,59 +399,51 @@ mod finance2 {
                 standard_min_rate: self.standard_min_rate,
                 emergency_max_rate: self.emergency_max_rate,
             };
+            // The current liquidity - the amount of underlying asset in the pool
             let liquidity = accruer.accrue();
 
-            let shares = self.shares;
+            let total_shares = self.shares;
             //First mint does not require any extra actions
-            let share = self.share.get(caller).unwrap_or(0);
+            let caller_shares: u128 = self.share.get(caller).unwrap_or(0);
 
-            let new_liquidity = {
-                let r = liquidity.checked_add(amount);
-                r.ok_or(LAssetError::MintLiquidityOverflow)
-            }?;
-            let minted = {
-                let w = mulw(amount, shares);
-                if let Some(m) = div_rate(w, liquidity) {
-                    Ok(m)
-                } else {
-                    // First shares are scalled by 2^16. It limits total_shares to 2^112
-                    if let Some(first) = amount.checked_shl(16) {
-                        Ok(first)
-                    } else {
-                        Err(LAssetError::MintOverflow)
-                    }
-                }
-            }?;
+            let new_liquidity = liquidity.checked_add(amount)
+                .ok_or(LAssetError::MintLiquidityOverflow)?;
+
+            let minted = match div_rate(mulw(amount, total_shares), liquidity) {
+                // division by liquidity was successful
+                Some(m) => m,
+                // liquidity = 0 => therefore mint with initial amount == deposit
+                None => amount
+            };
             
-            //impossible to overflow IF total_liquidity is tracked correctly
-            let new_shares = if let Some(ns) = shares.checked_add(minted) {
-                Ok(ns)
-            } else {
-                Err(LAssetError::MintSharesOverflow)
-            }?;
-            let new_share = add(share, minted);
+            // impossible to overflow IF total_liquidity is tracked correctly
+            let new_shares = total_shares.checked_add(minted)
+                .ok_or(LAssetError::MintSharesOverflow)?;
+            let new_share = add(caller_shares, minted);
             let new_borrowable = add(borrowable, amount);
 
-            //it is crucial to update those four variables together
+            // it is crucial to update those four variables together
             self.liquidity = new_liquidity;
             self.shares = new_shares;
             self.share.insert(caller, &new_share);
             self.borrowable = new_borrowable;
+
+            // New shares were minted
+            self.env().emit_event(Transfer {from: None, to: Some(caller), value: minted});
 
             self.updated_at = now;
 
             Ok(())
         }
 
-        //in this function amount is number of shares, not underlying token
+        /// Burn a specified amount of shares and receive the underlying tokens
         #[ink(message)]
         pub fn burn(&mut self, amount: u128) -> Result<(), LAssetError> {
             //You can burn for yourself only
             let caller = self.env().caller();
 
             let updated_at = self.updated_at;
-            let timestamp = self.env().block_timestamp();
-            let now = logic::get_now(timestamp, updated_at);
+            let now = logic::get_now(self.env().block_timestamp(), updated_at);
 
             let borrowable = self.borrowable;
             let accruer = logic::Accruer {
@@ -474,15 +458,11 @@ mod finance2 {
             };
             let liquidity = accruer.accrue();
 
-            let shares = self.shares;
+            let total_shares = self.shares;
             //Burn without mint is useless, but not forbidden
-            let share = self.share.get(caller).unwrap_or(0);
+            let caller_shares = self.share.get(caller).unwrap_or(0);
 
-            let new_share = if let Some(r) = share.checked_sub(amount) {
-                Ok(r)
-            } else {
-                Err(LAssetError::BurnOverflow)
-            }?;
+            let new_share = caller_shares.checked_sub(amount).ok_or(LAssetError::BurnOverflow)?;
 
             //Number of withdrawned liquidity is reduced by division precision
             //It is even possible to withdraw zero liquidity, even if some shares are burned
@@ -490,20 +470,16 @@ mod finance2 {
             //And it incentives caller not to burn shares, but hold them longer
             let to_withdraw = {
                 let w = mulw(amount, liquidity);
-                div_rate(w, shares).unwrap_or(0)
+                div_rate(w, total_shares).unwrap_or(0)
             };
 
             //impossible to overflow IF liquidity_shares are tracked correctly
-            let new_shares = sub(shares, amount);
+            let new_shares = sub(total_shares, amount);
             //impossible to overflow IF total_liquidity is tracked correctly
             let new_liquidity = sub(liquidity, to_withdraw);
 
             //TODO: resolve potential front running
-            let new_borrowable = if let Some(r) = borrowable.checked_sub(to_withdraw) {
-                Ok(r)
-            } else {
-                Err(LAssetError::BurnTooMuch)
-            }?;
+            let new_borrowable: u128 = borrowable.checked_sub(to_withdraw).ok_or(LAssetError::BurnTooMuch)?;
 
             //it is crucial to update those four variables together
             self.liquidity = new_liquidity;
@@ -513,11 +489,9 @@ mod finance2 {
 
             self.updated_at = now;
 
-            if let Err(e) = self.transfer_underlying(caller, to_withdraw) {
-                Err(LAssetError::BurnTransferFailed(e))
-            } else {
-                Ok(())
-            }?;
+            self.transfer_underlying(caller, to_withdraw).map_err(|e| LAssetError::BurnTransferFailed(e))?;
+            // Some shares were burned
+            self.env().emit_event(Transfer {from: Some(caller), to: None, value: amount});
 
             Ok(())
         }
@@ -529,8 +503,7 @@ mod finance2 {
             let caller = self.env().caller();
 
             let updated_at = self.updated_at;
-            let timestamp = self.env().block_timestamp();
-            let now = logic::get_now(timestamp, updated_at);
+            let now = logic::get_now(self.env().block_timestamp(), updated_at);
             
             let current = self.env().account_id();
             
@@ -872,7 +845,7 @@ mod finance2 {
         #[ink(message)]
         fn update(&mut self, user: AccountId) -> (AccountId, u128, u128, u128, u128) {
             let updated_at = self.updated_at;
-            let now = self.get_now(updated_at);
+            let now = logic::get_now(self.env().block_timestamp(), updated_at);
             let collateral = self.collateral.get(user).unwrap_or(0);
             let borrowed = self.borrowed.get(user).unwrap_or(0);
             let borrows = self.borrows;
