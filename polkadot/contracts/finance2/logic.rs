@@ -45,6 +45,10 @@ pub fn scale(a: U256) -> u128 {
     use core::ops::Shr;
     a.shr(128).low_u128()
 }
+pub fn scale_up(a: U256) -> u128 {
+    let c = !a.is_zero() as u128;
+    add(scale(a), c)
+}
 
 pub fn get_now(block_timestamp: u64, updated_at: u64) -> u64 {
     if block_timestamp < updated_at {
@@ -117,7 +121,7 @@ impl Accruer {
         let interest_rate = standard_final.max(emergency_final);
         let interest = {
             let w = mulw(debt, interest_rate);
-            scale(w)
+            scale_up(w)
         };
 
         self.liquidity.saturating_add(interest)

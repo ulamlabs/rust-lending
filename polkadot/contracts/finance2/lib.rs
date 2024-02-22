@@ -32,11 +32,6 @@ mod finance2 {
     const GAS_COLLATERAL: u128 = 1_000_000; // TODO find something less random
     const DEFAULT_DECIMALS: u8 = 6;
 
-    // fn scale_up(a: U256) -> u128 {
-    //     let c = !a.is_zero() as u128;
-    //     add(scale(a), c)
-    // }
-
     use ink::storage::Mapping;
     use crate::LAsset;
     use crate::errors::LAssetError;
