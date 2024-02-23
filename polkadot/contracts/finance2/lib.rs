@@ -428,10 +428,10 @@ mod finance2 {
             self.share.insert(caller, &new_share);
             self.borrowable = new_borrowable;
 
+            self.updated_at = now;
+
             // New shares were minted
             self.env().emit_event(Transfer {from: None, to: Some(caller), value: minted});
-
-            self.updated_at = now;
 
             Ok(())
         }
@@ -490,6 +490,7 @@ mod finance2 {
             self.updated_at = now;
 
             self.transfer_underlying(caller, to_withdraw).map_err(LAssetError::BurnTransferFailed)?;
+
             // Some shares were burned
             self.env().emit_event(Transfer {from: Some(caller), to: None, value: amount});
 
