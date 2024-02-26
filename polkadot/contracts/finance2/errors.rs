@@ -2,6 +2,8 @@ use crate::psp22::PSP22Error;
 
 #[ink::scale_derive(Encode, Decode, TypeInfo)]
 pub enum LAssetError {
+    CallerIsNotAdmin,
+
     DepositOverflow,
     DepositTransferFailed(PSP22Error),
     FirstDepositRequiresGasCollateral,
