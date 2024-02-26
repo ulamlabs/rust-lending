@@ -47,7 +47,7 @@ mod finance2 {
 
         next: AccountId,
 
-        collaterals: u128,
+        total_collateral: u128,
         collateral: Mapping<AccountId, u128>,
         
         //Maximum amount of liquidity that can be borrowed
@@ -122,7 +122,7 @@ mod finance2 {
                 underlying_token,
                 updated_at: Self::env().block_timestamp(),
                 next,
-                collaterals: 0,
+                total_collateral: 0,
                 collateral: Mapping::new(),
                 liquidity: 0,
                 shares: 0,
@@ -194,7 +194,7 @@ mod finance2 {
                 }
             }?;
 
-            let new_collaterals = if let Some(nc) = self.collaterals.checked_add(amount) {
+            let new_total_collateral = if let Some(nc) = self.total_collateral.checked_add(amount) {
                 Ok(nc)
             } else {
                 Err(LAssetError::DepositOverflow)
@@ -203,7 +203,7 @@ mod finance2 {
             let new_collateral = add(collateral, amount);
 
             //it is crucial to update those two variables together
-            self.collaterals = new_collaterals;
+            self.total_collateral = new_total_collateral;
             self.collateral.insert(caller, &new_collateral);
 
             Ok(())
@@ -237,7 +237,7 @@ mod finance2 {
             } else {
                 Err(LAssetError::WithdrawOverflow)
             }?;
-            let new_collaterals = sub(self.collaterals, amount);
+            let new_total_collateral = sub(self.total_collateral, amount);
 
             //We can ignore the fact, that user did not borrow anything yet, because
             //Borrow shares are not updated in this call
@@ -277,7 +277,7 @@ mod finance2 {
             //Collateral must be updated before update
             //Inside update_all, we call next, so it is possible to reenter withdraw
             //Those values can be updated now, because update does not affect them
-            self.collaterals = new_collaterals;
+            self.total_collateral = new_total_collateral;
             self.collateral.insert(caller, &new_collateral);
 
             //We can update those now, because, updating other pools does not affect them
@@ -574,29 +574,22 @@ mod finance2 {
             let caller = self.env().caller();
             let this = self.env().account_id();
 
-            let mut initial_collateral_value: u128 = 0;
-            let mut initial_debt_value: u128 = 0;
-            let mut maintenance_collateral_value: u128 = 0;
-            let mut maintenance_debt_value: u128 = 0;
-            let mut repaid: u128 = 0;
+            let mut total_icv: u128 = 0;
+            let mut total_idv: u128 = 0;
+            let mut total_mcv: u128 = 0;
+            let mut total_mdv: u128 = 0;
+            let mut total_repaid: u128 = 0;
 
-            let mut next = self.next;
-            while next != this {
-                let (
-                    next2, 
-                    next_repaid,
-                    next_initial_collateral_value, 
-                    next_initial_debt_value, 
-                    next_maintenance_collateral_value, 
-                    next_maintenance_debt_value
-                ) = repay_any(next, user, amount, cash, caller)?;
-
-                next = next2;
-                repaid = next_repaid.saturating_add(next_repaid);
-                initial_collateral_value = initial_collateral_value.saturating_add(next_initial_collateral_value);
-                initial_debt_value = initial_debt_value.saturating_add(next_initial_debt_value);
-                maintenance_collateral_value = maintenance_collateral_value.saturating_add(next_maintenance_collateral_value);
-                maintenance_debt_value = maintenance_debt_value.saturating_add(next_maintenance_debt_value);
+            let mut current = self.next;
+            while current != this {
+                let (next, repaid, icv, idv, mcv, mdv) = repay_any(current, user, amount, cash, caller)?;
+                
+                current = next;
+                total_repaid = repaid.saturating_add(repaid);
+                total_icv = total_icv.saturating_add(icv);
+                total_idv = total_idv.saturating_add(idv);
+                total_mcv = total_mcv.saturating_add(mcv);
+                total_mdv = total_mdv.saturating_add(mdv);
             }
 
             let updated_at = self.updated_at;
@@ -628,15 +621,15 @@ mod finance2 {
                 borrows: self.borrows,
                 liquidity,
             };
-            let delta_collateral = quoter.dequote(self.discount, repaid);
+            let delta_collateral = quoter.dequote(self.discount, total_repaid);
             let new_collateral = if let Some(r) = collateral.checked_sub(delta_collateral) {
                 Ok(r)
             } else {
                 Err(LAssetError::LiquidateCollateralOverflow)
             }?;
-            let new_collaterals = sub(self.collaterals, delta_collateral);
+            let new_total_collateral = sub(self.total_collateral, delta_collateral);
 
-            self.collaterals = new_collaterals;
+            self.total_collateral = new_total_collateral;
             self.collateral.insert(user, &new_collateral);
 
             self.liquidity = liquidity;
@@ -653,7 +646,9 @@ mod finance2 {
                 quoted_collateral,
                 quoted_debt,
             };
-            let (mut initial_collateral_value, mut initial_debt_value) = initial_valuator.values();
+            let (icv, idv) = initial_valuator.values();
+            total_icv = total_icv.saturating_add(icv);
+            total_idv = total_idv.saturating_add(idv);
 
             let mainteneance_valuator = logic::Valuator {
                 margin: self.maintenance_margin,
@@ -661,22 +656,21 @@ mod finance2 {
                 quoted_collateral: quoted_old_collateral,
                 quoted_debt,
             };
-            let (mut maintenance_collateral_value, mut maintenance_debt_value) = mainteneance_valuator.values();
+            let (mcv, mdv) = mainteneance_valuator.values();
+            total_mcv = total_mcv.saturating_add(mcv);
+            total_mdv = total_mdv.saturating_add(mdv);
 
 
-            if maintenance_collateral_value >= maintenance_debt_value {
+            if total_mcv >= total_mdv {
                 return Err(LAssetError::LiquidateTooEarly);
             }
-            if initial_collateral_value >= initial_debt_value {
+            if total_icv >= total_idv {
                 return Err(LAssetError::LiquidateTooMuch);
             } 
 
-            if let Err(e) = transfer(self.underlying_token, caller, delta_collateral) {
-                Err(LAssetError::LiquidateTransferFailed(e))
-            } else {
-                Ok(())
-            }
+            transfer(self.underlying_token, caller, delta_collateral).map_err(LAssetError::LiquidateTransferFailed)?;
 
+            Ok(())
         }
 
         fn inner_repay(&mut self, caller: AccountId, user: AccountId, amount: u128, cash: u128, cash_owner: AccountId, borrowable: u128
@@ -775,8 +769,8 @@ mod finance2 {
                 new_borrowed, 
                 liquidity
             ) = if  caller == valid_caller {
-                let cash = self.cash.get(cash_owner).unwrap_or(0);
-                let new_cash = cash.checked_sub(cash).ok_or(LAssetError::RepayInsufficientCash)?;
+                let old_cash = self.cash.get(cash_owner).unwrap_or(0);
+                let new_cash = old_cash.checked_sub(cash).ok_or(LAssetError::RepayInsufficientCash)?;
 
                 self.whitelist.remove(caller);
                 self.cash.insert(caller, &new_cash);
