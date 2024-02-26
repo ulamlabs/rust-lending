@@ -28,7 +28,7 @@ mod finance2 {
     use ink::prelude::string::String;
     #[cfg(not(test))]
     use ink::prelude::vec;
-    use crate::logic::{self, add, ceil_rate, div_rate, mulw, sub};
+    use crate::logic::{self, add, mulw, sub};
 
     //Solving problem with small borrows/deposits
     const GAS_COLLATERAL: u128 = 1_000_000; // TODO find something less random
@@ -346,19 +346,11 @@ mod finance2 {
             //First mint does not require any extra actions
             let caller_shares: u128 = self.share.get(caller).unwrap_or(0);
 
-            let new_liquidity = liquidity.checked_add(amount)
-                .ok_or(LAssetError::MintLiquidityOverflow)?;
+            let new_liquidity = liquidity.checked_add(amount).ok_or(LAssetError::MintLiquidityOverflow)?;
 
-            let minted = match div_rate(mulw(amount, total_shares), liquidity) {
-                // division by liquidity was successful
-                Some(m) => m,
-                // liquidity = 0 => therefore mint with initial amount == deposit
-                None => amount
-            };
+            let minted = mulw(amount, total_shares).div_rate(liquidity).unwrap_or(amount);
             
-            // impossible to overflow IF total_liquidity is tracked correctly
-            let new_shares = total_shares.checked_add(minted)
-                .ok_or(LAssetError::MintSharesOverflow)?;
+            let new_shares = add(total_shares, minted);
             let new_share = add(caller_shares, minted);
             let new_borrowable = add(borrowable, amount);
 
@@ -408,10 +400,7 @@ mod finance2 {
             //It is even possible to withdraw zero liquidity, even if some shares are burned
             //It has good sides, number of liquidity will never be grater than number of shares
             //And it incentives caller not to burn shares, but hold them longer
-            let to_withdraw = {
-                let w = mulw(amount, liquidity);
-                div_rate(w, total_shares).unwrap_or(0)
-            };
+            let to_withdraw = mulw(amount, liquidity).div_rate(total_shares).unwrap_or(0);
 
             //impossible to overflow IF liquidity_shares are tracked correctly
             let new_shares = sub(total_shares, amount);
@@ -474,19 +463,7 @@ mod finance2 {
             //It is not wanted, because it would lead to situation, when
             //caller could borrow some liquidity without minting any shares
             //ceiling is solving that problem
-            let minted = {
-                let w = mulw(amount, borrows);
-                if let Some(m) = ceil_rate(w, debt) {
-                    Ok(m)
-                } else {
-                    // First minted are scaled by 2^16. It limits borrows to 2^112
-                    if let Some(first) = amount.checked_shl(16) {
-                        Ok(first)
-                    } else {
-                        Err(LAssetError::BorrowOverflow)
-                    }
-                }
-            }?;
+            let minted = mulw(amount, borrows).ceil_rate(debt).unwrap_or(amount);
 
             let borrowed = if let Some(borrowed) = self.borrowed.get(caller) {
                 Ok(borrowed)
@@ -498,11 +475,7 @@ mod finance2 {
 
             let collateral = self.collateral.get(caller).unwrap_or(0);
             
-            let new_borrows = if let Some(nb) = borrows.checked_add(minted) {
-                Ok(nb)
-            } else {
-                Err(LAssetError::BorrowSharesOverflow)
-            }?;
+            let new_borrows = add(borrows, minted);
             let new_borrowed = add(borrowed, minted);
             
             let quoter = logic::Quoter {
@@ -704,10 +677,8 @@ mod finance2 {
             
             let new_debt = sub(liquidity, borrowable);
             let borrows = self.borrows;
-            let repaid = {
-                let w = mulw(amount, new_debt);
-                ceil_rate(w, borrows).unwrap_or(0)
-            };
+            let repaid = mulw(amount, new_debt).ceil_rate(borrows).unwrap_or(0);
+            
             let extra_cash = if let Some(r) = cash.checked_sub(repaid) {
                 Ok(r)
             } else {
