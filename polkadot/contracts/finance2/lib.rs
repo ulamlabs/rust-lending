@@ -11,10 +11,10 @@ mod tests;
 #[ink::trait_definition]
 pub trait LAsset {
     #[ink(message)]
-    fn update(&mut self, user: AccountId) -> (AccountId, u128, u128, u128, u128);
+    fn update(&mut self, user: AccountId) -> (AccountId, u128, u128);
 
     #[ink(message)]
-    fn repay(&mut self, user: AccountId, amount: u128, cash: u128, cash_owner: AccountId) -> Result<(AccountId, u128, u128, u128, u128, u128), LAssetError>;
+    fn try_repay(&mut self, user: AccountId, amount: u128, cash: u128, cash_owner: AccountId) -> Result<(AccountId, u128, u128, u128, u128, u128), LAssetError>;
 }
 
 
@@ -22,12 +22,14 @@ pub trait LAsset {
 mod finance2 {
     #[cfg(not(test))]
     use ink::contract_ref;
-    use ink::prelude::vec::Vec;
+    #[cfg(not(test))]
     use ink::prelude::vec;
+    use ink::prelude::vec::Vec;
+    use ink::prelude::string::String;
     use traits::FlashLoanPool;
     use traits::errors::LAssetError;
     use traits::psp22::{PSP22Error, PSP22Metadata, Transfer, Approval, PSP22};
-    use crate::logic::{self, add, ceil_rate, div_rate, mulw, scale, sub};
+    use crate::logic::{self, add, mulw, sub};
 
     //Solving problem with small borrows/deposits
     const GAS_COLLATERAL: u128 = 1_000_000; // TODO find something less random
@@ -44,7 +46,7 @@ mod finance2 {
 
         next: AccountId,
 
-        collaterals: u128,
+        total_collateral: u128,
         collateral: Mapping<AccountId, u128>,
         
         //Maximum amount of liquidity that can be borrowed
@@ -77,10 +79,13 @@ mod finance2 {
         initial_haircut: u128,
         maintenance_haircut: u128,
 
+        discount: u128,
+
         price: u128,
         price_scaler: u128,
 
         cash: Mapping<AccountId, u128>,
+        whitelist: Mapping<AccountId, AccountId>,
 
         // PSP22Metadata
         name: Option<String>,
@@ -91,19 +96,13 @@ mod finance2 {
         pub flash: AccountId,
     }
 
-    #[cfg(test)]
-    static mut L_BTC: Option<LAssetContract> = None;
-    #[cfg(test)]
-    static mut L_USDC: Option<LAssetContract> = None;
-    #[cfg(test)]
-    static mut L_ETH: Option<LAssetContract> = None;
+    
 
 
     impl LAssetContract {
         #[allow(clippy::too_many_arguments)]
         #[ink(constructor)]
         pub fn new(
-            admin: AccountId,
             underlying_token: AccountId,
             next: AccountId,
             standard_rate: u128,
@@ -114,17 +113,19 @@ mod finance2 {
             maintenance_margin: u128,
             initial_haircut: u128,
             maintenance_haircut: u128,
-            price: u128,
             flash: AccountId,
+            discount: u128,
+            price_scaler: u128,
         ) -> Self {
             let (name, symbol, decimals) = fetch_psp22_metadata(underlying_token);
+            let admin: AccountId = Self::env().caller();
 
             Self { 
                 admin,
                 underlying_token,
                 updated_at: Self::env().block_timestamp(),
                 next,
-                collaterals: 0,
+                total_collateral: 0,
                 collateral: Mapping::new(),
                 liquidity: 0,
                 shares: 0,
@@ -141,66 +142,25 @@ mod finance2 {
                 maintenance_margin,
                 initial_haircut,
                 maintenance_haircut,
-                price,
-                price_scaler: 1,
+                discount,
+                price: 0,
+                price_scaler,
                 cash: Mapping::new(),
+                whitelist: Mapping::new(),
                 name,
                 symbol,
                 decimals,
                 flash,
              }
         }
-
-        #[cfg(not(test))]
-        fn update_next(&self, next: &AccountId, user: &AccountId) -> (AccountId, u128, u128, u128, u128) {
-            let mut next: contract_ref!(LAsset) = (*next).into();
-            next.update(*user)
-        }
-
-        #[cfg(test)]
-        fn update_next(&self, next: &AccountId, user: &AccountId) -> (AccountId, u128, u128, u128, u128) {
-            unsafe {
-                if *next == AccountId::from([0x1; 32]) {
-                    return L_BTC.as_mut().unwrap().update(*user);
-                }
-                if *next == AccountId::from([0x2; 32]) {
-                    return L_USDC.as_mut().unwrap().update(*user);
-                }
-                if *next == AccountId::from([0x3; 32]) {
-                    return L_ETH.as_mut().unwrap().update(*user);
-                }
-                unreachable!();
+        #[ink(message)]
+        pub fn set_price(&mut self, price: u128) -> Result<(), LAssetError> {
+            let caller = self.env().caller();
+            if caller != self.admin {
+                return Err(LAssetError::CallerIsNotAdmin);
             }
-        }
-        #[cfg(not(test))]
-        fn repay_any(&self, app: AccountId, user: AccountId, amount: u128, cash: u128, cash_owner: AccountId) -> Result<(AccountId, u128, u128, u128, u128, u128), LAssetError> {
-            let mut app: contract_ref!(LAsset) = app.into();
-            app.repay(user, amount, cash, cash_owner)
-        }
-        #[cfg(test)]
-        fn repay_any(&self, app: AccountId, user: AccountId, amount: u128, cash: u128, cash_owner: AccountId) -> Result<(AccountId, u128, u128, u128, u128, u128), LAssetError> {
-            unsafe {
-                if app == AccountId::from([0x1; 32]) {
-                    return L_BTC.as_mut().unwrap().repay(user, amount, cash, cash_owner);
-                }
-                if app == AccountId::from([0x2; 32]) {
-                    return L_USDC.as_mut().unwrap().repay(user, amount, cash, cash_owner);
-                }
-                if app == AccountId::from([0x3; 32]) {
-                    return L_ETH.as_mut().unwrap().repay(user, amount, cash, cash_owner);
-                }
-                unreachable!();
-            }
-        }
+            self.price = price;
 
-        #[cfg(not(test))]
-        fn transfer_from_underlying(&self, token: AccountId, from: AccountId, to: AccountId, value: u128) -> Result<(), PSP22Error> {
-            let mut token: contract_ref!(PSP22) = token.into();
-            token.transfer_from(from, to, value, vec![])
-        }
-        #[cfg(test)]
-        #[allow(unused_variables)]
-        fn transfer_from_underlying(&self, token: AccountId, from: AccountId, to: AccountId, value: u128) -> Result<(), PSP22Error> {
             Ok(())
         }
 
@@ -213,40 +173,6 @@ mod finance2 {
         #[allow(unused_variables)]
         fn transfer_underlying(&self, to: AccountId, value: u128) -> Result<(), PSP22Error> {
             Ok(())
-        }
-        #[cfg(not(test))]
-        fn approve_underlying(&self, token: AccountId, to: AccountId, value: u128) -> Result<(), PSP22Error> {
-            let mut token: contract_ref!(PSP22) = token.into();
-            token.approve(to, value)
-        }
-        #[cfg(test)]
-        #[allow(unused_variables)]
-        fn approve_underlying(&self, token: AccountId, to: AccountId, value: u128) -> Result<(), PSP22Error> {
-            Ok(())
-        }
-
-        #[cfg(not(test))]
-        fn psp22_balance_of(&self, token: AccountId, owner: AccountId) -> u128 {
-            let token: contract_ref!(PSP22) = token.into();
-            token.balance_of(owner)
-        }
-        #[cfg(test)]
-        #[allow(unused_variables)]
-        fn psp22_balance_of(&self, token: AccountId, owner: AccountId) -> u128 {
-            0
-        }
-
-        //We are not sure if now can be less than updated_at
-        //It is possible, someone could accrue interest few times for the same period
-        //Also integer overflow could occur and time delta calculation could wrap around
-        //updated_at is updated here, to prevent using that function multiple time in the same message
-        fn get_now(&self, updated_at: Timestamp) -> Timestamp {
-            let now = self.env().block_timestamp();
-            if now < updated_at {
-                updated_at
-            } else {
-                now
-            }
         }
         
         //There function does not require anything
@@ -264,7 +190,7 @@ mod finance2 {
             //For example, if we have `let total_collateral = self.total_collateral`
             //And leter use it to update `total_collateral`, it would be possible
             //To reenter deposit function and update `total_collateral` using old, invalid value
-            if let Err(e) = self.transfer_from_underlying(self.underlying_token, caller, this, amount) {
+            if let Err(e) = transfer_from(self.underlying_token, caller, this, amount) {
                 Err(LAssetError::DepositTransferFailed(e))
             } else {
                 Ok(())
@@ -283,7 +209,7 @@ mod finance2 {
                 }
             }?;
 
-            let new_collaterals = if let Some(nc) = self.collaterals.checked_add(amount) {
+            let new_total_collateral = if let Some(nc) = self.total_collateral.checked_add(amount) {
                 Ok(nc)
             } else {
                 Err(LAssetError::DepositOverflow)
@@ -292,7 +218,7 @@ mod finance2 {
             let new_collateral = add(collateral, amount);
 
             //it is crucial to update those two variables together
-            self.collaterals = new_collaterals;
+            self.total_collateral = new_total_collateral;
             self.collateral.insert(caller, &new_collateral);
 
             Ok(())
@@ -326,7 +252,7 @@ mod finance2 {
             } else {
                 Err(LAssetError::WithdrawOverflow)
             }?;
-            let new_collaterals = sub(self.collaterals, amount);
+            let new_total_collateral = sub(self.total_collateral, amount);
 
             //We can ignore the fact, that user did not borrow anything yet, because
             //Borrow shares are not updated in this call
@@ -366,7 +292,7 @@ mod finance2 {
             //Collateral must be updated before update
             //Inside update_all, we call next, so it is possible to reenter withdraw
             //Those values can be updated now, because update does not affect them
-            self.collaterals = new_collaterals;
+            self.total_collateral = new_total_collateral;
             self.collateral.insert(caller, &new_collateral);
 
             //We can update those now, because, updating other pools does not affect them
@@ -377,7 +303,7 @@ mod finance2 {
             //inline update_all
             let mut next = self.next;
             while next != this {
-                let (next2, next_collateral_value, next_debt_value, _, _) = self.update_next(&next, &caller);
+                let (next2, next_collateral_value, next_debt_value) = update_next(&next, &caller);
                 next = next2;
                 collateral_value = collateral_value.saturating_add(next_collateral_value);
                 debt_value = debt_value.saturating_add(next_debt_value);
@@ -390,7 +316,7 @@ mod finance2 {
 
             //Transfer out after state is updated to prevent reentrancy attack
             //If someone tries to reenter, the most what can be achieved would be to change events emiting order
-            if let Err(e) = self.transfer_underlying(caller, amount) {
+            if let Err(e) = transfer(self.underlying_token, caller, amount) {
                 Err(LAssetError::WithdrawTransferFailed(e))
             } else {
                 Ok(())
@@ -409,7 +335,7 @@ mod finance2 {
             let this = self.env().account_id();
 
             //To prevent reentrancy attack, we have to transfer tokens first
-            self.transfer_from_underlying(self.underlying_token, caller, this, amount)
+            transfer_from(self.underlying_token, caller, this, amount)
                 .map_err(LAssetError::MintTransferFailed)?;
 
             let updated_at = self.updated_at;
@@ -435,19 +361,11 @@ mod finance2 {
             //First mint does not require any extra actions
             let caller_shares: u128 = self.share.get(caller).unwrap_or(0);
 
-            let new_liquidity = liquidity.checked_add(amount)
-                .ok_or(LAssetError::MintLiquidityOverflow)?;
+            let new_liquidity = liquidity.checked_add(amount).ok_or(LAssetError::MintLiquidityOverflow)?;
 
-            let minted = match div_rate(mulw(amount, total_shares), liquidity) {
-                // division by liquidity was successful
-                Some(m) => m,
-                // liquidity = 0 => therefore mint with initial amount == deposit
-                None => amount
-            };
+            let minted = mulw(amount, total_shares).div_rate(liquidity).unwrap_or(amount);
             
-            // impossible to overflow IF total_liquidity is tracked correctly
-            let new_shares = total_shares.checked_add(minted)
-                .ok_or(LAssetError::MintSharesOverflow)?;
+            let new_shares = add(total_shares, minted);
             let new_share = add(caller_shares, minted);
             let new_borrowable = add(borrowable, amount);
 
@@ -497,10 +415,7 @@ mod finance2 {
             //It is even possible to withdraw zero liquidity, even if some shares are burned
             //It has good sides, number of liquidity will never be grater than number of shares
             //And it incentives caller not to burn shares, but hold them longer
-            let to_withdraw = {
-                let w = mulw(amount, liquidity);
-                div_rate(w, total_shares).unwrap_or(0)
-            };
+            let to_withdraw = mulw(amount, liquidity).div_rate(total_shares).unwrap_or(0);
 
             //impossible to overflow IF liquidity_shares are tracked correctly
             let new_shares = sub(total_shares, amount);
@@ -518,7 +433,7 @@ mod finance2 {
 
             self.updated_at = now;
 
-            self.transfer_underlying(caller, to_withdraw).map_err(LAssetError::BurnTransferFailed)?;
+            transfer(self.underlying_token, caller, to_withdraw).map_err(LAssetError::BurnTransferFailed)?;
 
             // Some shares were burned
             self.env().emit_event(Transfer {from: Some(caller), to: None, value: amount});
@@ -563,19 +478,7 @@ mod finance2 {
             //It is not wanted, because it would lead to situation, when
             //caller could borrow some liquidity without minting any shares
             //ceiling is solving that problem
-            let minted = {
-                let w = mulw(amount, borrows);
-                if let Some(m) = ceil_rate(w, debt) {
-                    Ok(m)
-                } else {
-                    // First minted are scaled by 2^16. It limits borrows to 2^112
-                    if let Some(first) = amount.checked_shl(16) {
-                        Ok(first)
-                    } else {
-                        Err(LAssetError::BorrowOverflow)
-                    }
-                }
-            }?;
+            let minted = mulw(amount, borrows).ceil_rate(debt).unwrap_or(amount);
 
             let borrowed = if let Some(borrowed) = self.borrowed.get(caller) {
                 Ok(borrowed)
@@ -587,11 +490,7 @@ mod finance2 {
 
             let collateral = self.collateral.get(caller).unwrap_or(0);
             
-            let new_borrows = if let Some(nb) = borrows.checked_add(minted) {
-                Ok(nb)
-            } else {
-                Err(LAssetError::BorrowSharesOverflow)
-            }?;
+            let new_borrows = add(borrows, minted);
             let new_borrowed = add(borrowed, minted);
             
             let quoter = logic::Quoter {
@@ -622,7 +521,7 @@ mod finance2 {
 
             let mut next = self.next;
             while next != current {
-                let (next2, next_collateral_value, next_debt_value, _, _) = self.update_next(&next, &caller);
+                let (next2, next_collateral_value, next_debt_value) = update_next(&next, &caller);
                 next = next2;
                 collateral_value = collateral_value.saturating_add(next_collateral_value);
                 debt_value = debt_value.saturating_add(next_debt_value);
@@ -633,7 +532,7 @@ mod finance2 {
                 Ok(())
             }?;
 
-            if let Err(e) = self.transfer_underlying(caller, amount) {
+            if let Err(e) = transfer(self.underlying_token, caller, amount) {
                 Err(LAssetError::BorrowTransferFailed(e))
             } else {
                 Ok(())
@@ -642,28 +541,44 @@ mod finance2 {
             Ok(())
         }
 
-        
-
         #[ink(message)]
-        pub fn liquidate(&mut self, user: AccountId, repay_asset: AccountId, repay_underlying: AccountId, amount: u128, cash: u128) -> Result<(), LAssetError> {
+        pub fn increase_cash(&mut self, spender: AccountId, amount: u128) -> Result<(), LAssetError> {
             let caller = self.env().caller();
             let this = self.env().account_id();
-            if this == repay_asset {
-                return Err(LAssetError::LiquidateSelf);
+            transfer_from(self.underlying_token, caller, this, amount).map_err(LAssetError::IncreaseCashTransferFailed)?;
+            
+            let cash = self.cash.get(caller).unwrap_or(0);
+            let new_cash = cash.checked_add(amount).ok_or(LAssetError::IncreaseCashOverflow)?;
+
+            self.cash.insert(caller, &new_cash);
+            self.whitelist.insert(caller, &spender);
+
+            Ok(())
+        }
+
+        #[ink(message)]
+        pub fn liquidate(&mut self, user: AccountId, amount: u128, cash: u128) -> Result<(), LAssetError> {
+            let caller = self.env().caller();
+            let this = self.env().account_id();
+
+            let mut total_icv: u128 = 0;
+            let mut total_idv: u128 = 0;
+            let mut total_mcv: u128 = 0;
+            let mut total_mdv: u128 = 0;
+            let mut total_repaid: u128 = 0;
+
+            let mut current = self.next;
+            while current != this {
+                let (next, repaid, icv, idv, mcv, mdv) = repay_any(current, user, amount, cash, caller)?;
+                
+                current = next;
+                total_repaid = repaid.saturating_add(repaid);
+                total_icv = total_icv.saturating_add(icv);
+                total_idv = total_idv.saturating_add(idv);
+                total_mcv = total_mcv.saturating_add(mcv);
+                total_mdv = total_mdv.saturating_add(mdv);
             }
 
-            if let Err(e) = self.transfer_from_underlying(repay_underlying, caller, this, cash) {
-                Err(LAssetError::LiquidateTransferFailed(e))
-            } else {
-                Ok(())
-            }?;
-            if let Err(e) = self.approve_underlying(repay_underlying, repay_asset, cash) {
-                Err(LAssetError::LiquidateApproveFailed(e))
-            } else {
-                Ok(())
-            }?;
-            let (repay_next, repaid, mut initial_collateral_value, mut initial_debt_value, mut maintenance_collateral_value, mut maintenance_debt_value) = self.repay_any(repay_asset, user, amount, cash, caller)?;
-            
             let updated_at = self.updated_at;
             let timestamp = self.env().block_timestamp();
             let now = logic::get_now(timestamp, updated_at);
@@ -693,15 +608,15 @@ mod finance2 {
                 borrows: self.borrows,
                 liquidity,
             };
-            let delta_collateral = quoter.dequote(repaid);
+            let delta_collateral = quoter.dequote(self.discount, total_repaid);
             let new_collateral = if let Some(r) = collateral.checked_sub(delta_collateral) {
                 Ok(r)
             } else {
                 Err(LAssetError::LiquidateCollateralOverflow)
             }?;
-            let new_collaterals = sub(self.collaterals, delta_collateral);
+            let new_total_collateral = sub(self.total_collateral, delta_collateral);
 
-            self.collaterals = new_collaterals;
+            self.total_collateral = new_total_collateral;
             self.collateral.insert(user, &new_collateral);
 
             self.liquidity = liquidity;
@@ -718,9 +633,9 @@ mod finance2 {
                 quoted_collateral,
                 quoted_debt,
             };
-            let (initial_collateral_value_delta, initial_debt_value_delta) = initial_valuator.values();
-            initial_collateral_value = initial_collateral_value.saturating_add(initial_collateral_value_delta);
-            initial_debt_value = initial_debt_value.saturating_add(initial_debt_value_delta);
+            let (icv, idv) = initial_valuator.values();
+            total_icv = total_icv.saturating_add(icv);
+            total_idv = total_idv.saturating_add(idv);
 
             let mainteneance_valuator = logic::Valuator {
                 margin: self.maintenance_margin,
@@ -728,58 +643,25 @@ mod finance2 {
                 quoted_collateral: quoted_old_collateral,
                 quoted_debt,
             };
-            let (maintenance_collateral_value_delta, maintenance_debt_value_delta) = mainteneance_valuator.values();
-            maintenance_collateral_value = maintenance_collateral_value.saturating_add(maintenance_collateral_value_delta);
-            maintenance_debt_value = maintenance_debt_value.saturating_add(maintenance_debt_value_delta);
+            let (mcv, mdv) = mainteneance_valuator.values();
+            total_mcv = total_mcv.saturating_add(mcv);
+            total_mdv = total_mdv.saturating_add(mdv);
 
-            let mut invalid = true;
-            let mut next = self.next;
-            while next != this {
-                if next == repay_asset {
-                    next = repay_next;
-                    invalid = false;
-                    continue;
-                }
-                let (next2, next_initial_collateral_value, next_initial_debt_value, next_maintenance_collateral_value, next_maintenance_debt_value) = self.update_next(&next, &user);
-                next = next2;
-                initial_collateral_value = initial_collateral_value.saturating_add(next_initial_collateral_value);
-                initial_debt_value = initial_debt_value.saturating_add(next_initial_debt_value);
-                maintenance_collateral_value = maintenance_collateral_value.saturating_add(next_maintenance_collateral_value);
-                maintenance_debt_value = maintenance_debt_value.saturating_add(next_maintenance_debt_value);
-            }
-            if invalid {
-                return Err(LAssetError::LiquidateInvalid);
-            }
-            if maintenance_collateral_value >= maintenance_debt_value {
+
+            if total_mcv >= total_mdv {
                 return Err(LAssetError::LiquidateTooEarly);
             }
-            if initial_collateral_value >= initial_debt_value {
+            if total_icv >= total_idv {
                 return Err(LAssetError::LiquidateTooMuch);
             } 
 
-            if let Err(e) = self.transfer_underlying(caller, delta_collateral) {
-                Err(LAssetError::LiquidateTransferFailed(e))
-            } else {
-                Ok(())
-            }
+            transfer(self.underlying_token, caller, delta_collateral).map_err(LAssetError::LiquidateTransferFailed)?;
 
+            Ok(())
         }
-    }
 
-    impl LAsset for LAssetContract {
-        #[ink(message)]
-        fn repay(&mut self, user: AccountId, amount: u128, cash: u128, cash_owner: AccountId) -> Result<(AccountId, u128, u128, u128, u128, u128), LAssetError> {
-            //You can repay for yourself only
-            let caller = self.env().caller();
-            let this = self.env().account_id();
-
-            //Transfer first to avoid read only reentrancy attack
-            if let Err(e) = self.transfer_from_underlying(self.underlying_token, caller, this, cash) {
-                Err(LAssetError::RepayTransferFailed(e))
-            } else {
-                Ok(())
-            }?;
-
+        fn inner_repay(&mut self, caller: AccountId, user: AccountId, amount: u128, cash: u128, cash_owner: AccountId, borrowable: u128
+        ) -> Result<(u128, u128, u128, u128, u128), LAssetError> {
             let updated_at = self.updated_at;
             let timestamp = self.env().block_timestamp();
             let now = logic::get_now(timestamp, updated_at);
@@ -796,7 +678,6 @@ mod finance2 {
                 Ok((borrowed, 0))
             }?;
 
-            let borrowable = self.borrowable;
             let accruer = logic::Accruer {
                 now,
                 updated_at,
@@ -811,10 +692,8 @@ mod finance2 {
             
             let new_debt = sub(liquidity, borrowable);
             let borrows = self.borrows;
-            let repaid = {
-                let w = mulw(amount, new_debt);
-                ceil_rate(w, borrows).unwrap_or(0)
-            };
+            let repaid = mulw(amount, new_debt).ceil_rate(borrows).unwrap_or(0);
+            
             let extra_cash = if let Some(r) = cash.checked_sub(repaid) {
                 Ok(r)
             } else {
@@ -830,13 +709,72 @@ mod finance2 {
             let new_borrowable = add(borrowable, repaid);
             let new_borrows = sub(borrows, amount);
 
-            self.cash.insert(cash_owner, &new_cash);
+            self.cash.insert(caller, &new_cash);
             self.borrowable = new_borrowable;
             self.borrows = new_borrows;
             self.borrowed.insert(user, &new_borrowed);
 
             self.liquidity = liquidity;
             self.updated_at = now;
+
+            Ok((repaid, new_borrowable, new_borrows, new_borrowed, liquidity))
+        }
+
+
+        #[ink(message)]
+        pub fn repay(&mut self, user: AccountId, amount: u128, cash: u128) -> Result<(), LAssetError> {
+            //You can repay for yourself only
+            let caller = self.env().caller();
+            let this = self.env().account_id();
+
+            //Transfer first to avoid read only reentrancy attack
+            if let Err(e) = transfer_from(self.underlying_token, caller, this, cash) {
+                Err(LAssetError::RepayTransferFailed(e))
+            } else {
+                Ok(())
+            }?;
+            self.inner_repay(caller, user, amount, cash, caller, self.borrowable)?;
+
+            Ok(())
+        }
+    }
+
+    impl LAsset for LAssetContract {
+        #[ink(message)]
+        fn try_repay(&mut self, user: AccountId, amount: u128, cash: u128, cash_owner: AccountId) -> Result<(AccountId, u128, u128, u128, u128, u128), LAssetError> {
+            //You can repay for yourself only
+            let caller = self.env().caller();
+
+            let valid_caller = self.whitelist.get(cash_owner).ok_or(LAssetError::RepayNotWhitelisted)?;
+            let borrowable = self.borrowable;
+            let (
+                repaid, 
+                new_borrowable, 
+                new_borrows, 
+                new_borrowed, 
+                liquidity
+            ) = if  caller == valid_caller {
+                let old_cash = self.cash.get(cash_owner).unwrap_or(0);
+                let new_cash = old_cash.checked_sub(cash).ok_or(LAssetError::RepayInsufficientCash)?;
+
+                self.whitelist.remove(caller);
+                self.cash.insert(caller, &new_cash);
+
+                self.inner_repay(cash_owner, user, amount, cash, cash_owner, borrowable)?
+            } else {
+                let accurer = logic::Accruer {
+                    now: self.updated_at,
+                    updated_at: self.updated_at,
+                    liquidity: self.liquidity,
+                    borrowable,
+                    standard_rate: self.standard_rate,
+                    emergency_rate: self.emergency_rate,
+                    standard_min_rate: self.standard_min_rate,
+                    emergency_max_rate: self.emergency_max_rate,
+                };
+                let liquidity = accurer.accrue();
+                (0, borrowable, self.borrows, self.borrowed.get(user).unwrap_or(0), liquidity)
+            };
 
             let qouter = logic::Quoter {
                 price: self.price,
@@ -873,7 +811,7 @@ mod finance2 {
         }
 
         #[ink(message)]
-        fn update(&mut self, user: AccountId) -> (AccountId, u128, u128, u128, u128) {
+        fn update(&mut self, user: AccountId) -> (AccountId, u128, u128) {
             let updated_at = self.updated_at;
             let now = logic::get_now(self.env().block_timestamp(), updated_at);
             let collateral = self.collateral.get(user).unwrap_or(0);
@@ -912,16 +850,9 @@ mod finance2 {
                 quoted_debt,
             };
             let (collateral_value, debt_value) = valuator.values();
-            let maintenance_valuator = logic::Valuator {
-                margin: self.maintenance_margin,
-                haircut: self.maintenance_haircut,
-                quoted_collateral,
-                quoted_debt,
-            };
-            let (maintenance_collateral_value, maintenance_debt_value) = maintenance_valuator.values();
 
             let next = self.next;
-            (next, collateral_value, debt_value, maintenance_collateral_value, maintenance_debt_value)
+            (next, collateral_value, debt_value)
         }
     }
 
@@ -1090,14 +1021,21 @@ mod finance2 {
     /// If the asset is not compatible with PSP22Metadata, the decimals will be set to 6
     fn fetch_psp22_metadata(token: AccountId) -> (Option<String>, Option<String>, u8) {
         use ink::codegen::TraitCallBuilder;
-        use ink::prelude::string::String;
         let token: contract_ref!(PSP22Metadata) = token.into();
         let name = token.call().token_name().transferred_value(0).try_invoke().unwrap_or(Ok(None)).unwrap_or(None);
         let symbol = token.call().token_symbol().transferred_value(0).try_invoke().unwrap_or(Ok(None)).unwrap_or(None);
         let decimals = token.call().token_decimals().transferred_value(0).try_invoke().unwrap_or(Ok(DEFAULT_DECIMALS)).unwrap_or(DEFAULT_DECIMALS);
 
-        let l_name = name.map(|n| String::from("L-") + &n);
-        let l_symbol = symbol.map(|s| String::from("L-") + &s);
+        let l_name = name.map(|n| {
+            let mut name = String::from("L-");
+            name.push_str(n.as_str());
+            name
+        });
+        let l_symbol = symbol.map(|s| {
+            let mut symbol = String::from("L-");
+            symbol.push_str(s.as_str());
+            symbol
+        });
 
         (l_name, l_symbol, decimals)
     }
@@ -1108,4 +1046,75 @@ mod finance2 {
         (Some("L-TestToken".to_string()), Some("L-TT".to_string()), 16)
     }
 
+    #[cfg(test)]
+    static mut L_BTC: Option<LAssetContract> = None;
+    #[cfg(test)]
+    static mut L_USDC: Option<LAssetContract> = None;
+    #[cfg(test)]
+    static mut L_ETH: Option<LAssetContract> = None;
+
+    #[cfg(not(test))]
+    fn update_next(next: &AccountId, user: &AccountId) -> (AccountId, u128, u128) {
+        let mut next: contract_ref!(LAsset) = (*next).into();
+        next.update(*user)
+    }
+
+    #[cfg(test)]
+    fn update_next(next: &AccountId, user: &AccountId) -> (AccountId, u128, u128) {
+        unsafe {
+            if *next == AccountId::from([0x1; 32]) {
+                return L_BTC.as_mut().unwrap().update(*user);
+            }
+            if *next == AccountId::from([0x2; 32]) {
+                return L_USDC.as_mut().unwrap().update(*user);
+            }
+            if *next == AccountId::from([0x3; 32]) {
+                return L_ETH.as_mut().unwrap().update(*user);
+            }
+            unreachable!();
+        }
+    }
+
+    #[cfg(not(test))]
+    fn repay_any(app: AccountId, user: AccountId, amount: u128, cash: u128, cash_owner: AccountId) -> Result<(AccountId, u128, u128, u128, u128, u128), LAssetError> {
+        let mut app: contract_ref!(LAsset) = app.into();
+        app.try_repay(user, amount, cash, cash_owner)
+    }
+    #[cfg(test)]
+    fn repay_any(app: AccountId, user: AccountId, amount: u128, cash: u128, cash_owner: AccountId) -> Result<(AccountId, u128, u128, u128, u128, u128), LAssetError> {
+        unsafe {
+            if app == AccountId::from([0x1; 32]) {
+                return L_BTC.as_mut().unwrap().try_repay(user, amount, cash, cash_owner);
+            }
+            if app == AccountId::from([0x2; 32]) {
+                return L_USDC.as_mut().unwrap().try_repay(user, amount, cash, cash_owner);
+            }
+            if app == AccountId::from([0x3; 32]) {
+                return L_ETH.as_mut().unwrap().try_repay(user, amount, cash, cash_owner);
+            }
+            unreachable!();
+        }
+    }
+
+    #[cfg(not(test))]
+    fn transfer_from(token: AccountId, from: AccountId, to: AccountId, value: u128) -> Result<(), PSP22Error> {
+        let mut token: contract_ref!(PSP22) = token.into();
+        token.transfer_from(from, to, value, vec![])
+    }
+    #[cfg(test)]
+    #[allow(unused_variables)]
+    fn transfer_from(token: AccountId, from: AccountId, to: AccountId, value: u128) -> Result<(), PSP22Error> {
+        Ok(())
+    }
+
+    #[cfg(not(test))]
+    fn transfer(token: AccountId, to: AccountId, value: u128) -> Result<(), PSP22Error> {
+        let mut token: contract_ref!(PSP22) = token.into();
+        token.transfer(to, value, vec![])
+    }
+    #[cfg(test)]
+    #[allow(unused_variables)]
+    fn transfer(token: AccountId, to: AccountId, value: u128) -> Result<(), PSP22Error> {
+        Ok(())
+    }
 }

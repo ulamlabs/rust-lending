@@ -1,7 +1,10 @@
 use crate::psp22::PSP22Error;
+use ink::prelude::string::String;
 
 #[ink::scale_derive(Encode, Decode, TypeInfo)]
 pub enum LAssetError {
+    CallerIsNotAdmin,
+
     DepositOverflow,
     DepositTransferFailed(PSP22Error),
     FirstDepositRequiresGasCollateral,
@@ -45,6 +48,12 @@ pub enum LAssetError {
     ForceRepayTransferFailed(PSP22Error),
     ForceRepayWithoutBorrow,
 
+    IncreaseCashOverflow,
+    IncreaseCashTransferFailed(PSP22Error),
+
+    RepayNotWhitelisted,
+    RepayInvalidCaller,
+
     /// Only the flash loan contract can call this endpoint
     FlashContractOnly,
     /// Take cash inside L-Asset Pool failed
@@ -53,8 +62,6 @@ pub enum LAssetError {
     FlashLoanTransferFailed(PSP22Error),
     FlashLoanFailed(FlashCalleeError),
     FlashLoanOverflow,
-
-    Unathorized,
 }
 
 

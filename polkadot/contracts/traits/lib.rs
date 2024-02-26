@@ -4,6 +4,7 @@ pub mod errors;
 pub mod psp22;
 
 use ink::primitives::AccountId;
+use ink::prelude::vec::Vec;
 pub use errors::{LAssetError, FlashCalleeError};
 
 #[ink::trait_definition]

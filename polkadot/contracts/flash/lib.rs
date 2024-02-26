@@ -65,7 +65,7 @@ mod flash {
         #[ink(message)]
         fn set_fee_per_million(&mut self, fee: u32) -> Result<(), LAssetError>  {
             if self.env().caller() != self.fee_admin {
-                return Err(LAssetError::Unathorized);
+                return Err(LAssetError::CallerIsNotAdmin);
             }
             self.fee_per_million = fee;
 
