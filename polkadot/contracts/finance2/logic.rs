@@ -2,6 +2,22 @@ use primitive_types::{U128, U256};
 
 pub struct Wide(U256);
 
+pub fn gte<E>(a: u128, b: u128, e: E) -> Result<(), E> {
+    if a < b {
+        Err(e)
+    } else {
+        Ok(())
+    }
+}
+
+pub fn lt<E>(a: u128, b: u128, e: E) -> Result<(), E> {
+    if a < b {
+        Ok(())
+    } else {
+        Err(e)
+    }
+}
+
 pub fn mulw(a: u128, b: u128) -> Wide {
     let value = U128::from(a).full_mul(U128::from(b));
     Wide(value)
@@ -55,32 +71,20 @@ impl Wide {
     }
 }
 
-/// We are not sure if now can be less than updated_at
-/// It is possible, someone could accrue interest few times for the same period
-/// Also integer overflow could occur and time delta calculation could wrap around
-/// updated_at is updated here, to prevent using that function multiple time in the same message
-pub fn get_now(block_timestamp: u64, updated_at: u64) -> u64 {
-    if block_timestamp < updated_at {
-        updated_at
-    } else {
-        block_timestamp
-    }
-}
-
 pub struct Quoter {
     pub price: u128,
     pub price_scaler: u128,
-    pub borrowed: u128,
-    pub borrows: u128,
-    pub liquidity: u128,
+    pub bonds: u128,
+    pub total_bonds: u128,
+    pub total_liquidity: u128,
 }
 impl Quoter {
     pub fn quote(&self, collateral: u128) -> u128 {
         mulw(collateral, self.price).div(self.price_scaler).unwrap_or(u128::MAX)
     }
-    pub fn quote_debt(&self, borrowable: u128) -> u128 {
-        let debt = sub(self.liquidity, borrowable);
-        let user_debt = mulw(self.borrowed, debt).ceil_up(self.borrows).unwrap_or(debt);
+    pub fn quote_debt(&self, total_borrowable: u128) -> u128 {
+        let debt = sub(self.total_liquidity, total_borrowable);
+        let user_debt = mulw(self.bonds, debt).ceil_up(self.total_bonds).unwrap_or(debt);
 
         mulw(user_debt, self.price).ceil_up(self.price_scaler).unwrap_or(u128::MAX)
     }
@@ -93,28 +97,33 @@ impl Quoter {
 pub struct Accruer {
     pub now: u64,
     pub updated_at: u64,
-    pub liquidity: u128,
-    pub borrowable: u128,
+    pub total_liquidity: u128,
+    pub total_borrowable: u128,
     pub standard_rate: u128,
     pub emergency_rate: u128,
     pub standard_min_rate: u128,
     pub emergency_max_rate: u128,
 }
 impl Accruer {
-    pub fn accrue(self) -> u128 {
-        let delta = sub(self.now as u128, self.updated_at as u128);
+    pub fn accrue(self) -> (u128, u64) {
+        let now = if self.now < self.updated_at {
+            self.updated_at
+        } else {
+            self.now
+        };
+        let delta = sub(now as u128, self.updated_at as u128);
         let standard_matured = self.standard_rate.saturating_mul(delta);
         let emergency_matured = self.emergency_rate.saturating_mul(delta);
 
-        let debt = sub(self.liquidity, self.borrowable);
+        let debt = sub(self.total_liquidity, self.total_borrowable);
 
         let standard_scaled = {
             mulw(standard_matured, debt)
-            .div_rate(self.liquidity)
+            .div_rate(self.total_liquidity)
             .unwrap_or(0)
         };
-        let emergency_scaled = mulw(emergency_matured, self.borrowable)
-            .div_rate(self.liquidity)
+        let emergency_scaled = mulw(emergency_matured, self.total_borrowable)
+            .div_rate(self.total_liquidity)
             .unwrap_or(0);
 
         let standard_final = standard_scaled.saturating_add(self.standard_min_rate);
@@ -123,7 +132,8 @@ impl Accruer {
         let interest_rate = standard_final.max(emergency_final);
         let interest = mulw(debt, interest_rate).scale_up();
 
-        self.liquidity.saturating_add(interest)
+        let new_total_liquidity = self.total_liquidity.saturating_add(interest);
+        (new_total_liquidity, now)
     }
 }
 
