@@ -26,7 +26,7 @@ mod finance2 {
     use ink::contract_ref;
     use ink::prelude::vec::Vec;
     use ink::prelude::string::String;
-    use ink::env::call;
+    #[cfg(not(test))]
     use ink::prelude::vec;
     use crate::logic::{self, add, ceil_rate, div_rate, mulw, sub};
 
@@ -557,8 +557,7 @@ mod finance2 {
         pub fn increase_cash(&mut self, spender: AccountId, amount: u128) -> Result<(), LAssetError> {
             let caller = self.env().caller();
             let this = self.env().account_id();
-            transfer_from(self.underlying_token, caller, this, amount)
-                .map_err(|e| LAssetError::IncreaseCashTransferFailed(e))?;
+            transfer_from(self.underlying_token, caller, this, amount).map_err(LAssetError::IncreaseCashTransferFailed)?;
             
             let cash = self.cash.get(caller).unwrap_or(0);
             let new_cash = cash.checked_add(amount).ok_or(LAssetError::IncreaseCashOverflow)?;
@@ -760,7 +759,7 @@ mod finance2 {
             //You can repay for yourself only
             let caller = self.env().caller();
 
-            let valid_caller = self.whitelist.get(&cash_owner).ok_or(LAssetError::RepayNotWhitelisted)?;
+            let valid_caller = self.whitelist.get(cash_owner).ok_or(LAssetError::RepayNotWhitelisted)?;
             let borrowable = self.borrowable;
             let (
                 repaid, 
@@ -781,7 +780,7 @@ mod finance2 {
                     now: self.updated_at,
                     updated_at: self.updated_at,
                     liquidity: self.liquidity,
-                    borrowable: borrowable,
+                    borrowable,
                     standard_rate: self.standard_rate,
                     emergency_rate: self.emergency_rate,
                     standard_min_rate: self.standard_min_rate,
