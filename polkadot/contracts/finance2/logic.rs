@@ -33,7 +33,7 @@ pub fn ceil_up(a: U256, b: u128) -> Option<u128> {
         None
     } else {
         let (result, rem) = a.div_mod(U256::from(b));
-        if let Some(x) = result.try_into().ok() {
+        if let Ok(x) = result.try_into() {
             let c = !rem.is_zero() as u128;
             Some(add(x, c))
         } else {
@@ -50,6 +50,10 @@ pub fn scale_up(a: U256) -> u128 {
     add(scale(a), c)
 }
 
+/// We are not sure if now can be less than updated_at
+/// It is possible, someone could accrue interest few times for the same period
+/// Also integer overflow could occur and time delta calculation could wrap around
+/// updated_at is updated here, to prevent using that function multiple time in the same message
 pub fn get_now(block_timestamp: u64, updated_at: u64) -> u64 {
     if block_timestamp < updated_at {
         updated_at
