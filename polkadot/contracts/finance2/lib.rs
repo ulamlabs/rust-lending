@@ -25,6 +25,8 @@ mod finance2 {
     #[cfg(not(test))]
     use ink::contract_ref;
     use ink::prelude::vec::Vec;
+    use ink::prelude::string::String;
+    use ink::prelude::vec;
     use crate::logic::{self, add, ceil_rate, div_rate, mulw, sub};
 
     //Solving problem with small borrows/deposits
@@ -1092,14 +1094,21 @@ mod finance2 {
     /// If the asset is not compatible with PSP22Metadata, the decimals will be set to 6
     fn fetch_psp22_metadata(token: AccountId) -> (Option<String>, Option<String>, u8) {
         use ink::codegen::TraitCallBuilder;
-        use ink::prelude::string::String;
         let token: contract_ref!(PSP22Metadata) = token.into();
         let name = token.call().token_name().transferred_value(0).try_invoke().unwrap_or(Ok(None)).unwrap_or(None);
         let symbol = token.call().token_symbol().transferred_value(0).try_invoke().unwrap_or(Ok(None)).unwrap_or(None);
         let decimals = token.call().token_decimals().transferred_value(0).try_invoke().unwrap_or(Ok(DEFAULT_DECIMALS)).unwrap_or(DEFAULT_DECIMALS);
 
-        let l_name = name.map(|n| String::from("L-") + &n);
-        let l_symbol = symbol.map(|s| String::from("L-") + &s);
+        let l_name = name.map(|n| {
+            let mut name = String::from("L-");
+            name.push_str(n.as_str());
+            name
+        });
+        let l_symbol = symbol.map(|s| {
+            let mut symbol = String::from("L-");
+            symbol.push_str(s.as_str());
+            symbol
+        });
 
         (l_name, l_symbol, decimals)
     }
