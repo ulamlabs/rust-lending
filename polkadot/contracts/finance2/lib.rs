@@ -113,7 +113,6 @@ mod finance2 {
             maintenance_margin: u128,
             initial_haircut: u128,
             maintenance_haircut: u128,
-            flash: AccountId,
             discount: u128,
             price_scaler: u128,
             flash: AccountId,
@@ -859,12 +858,14 @@ mod finance2 {
 
     impl FlashLoanPool for LAssetContract {
         #[ink(message)]
-        fn take_cash(&mut self, amount: u128, target: AccountId) -> Result<(), LAssetError> {
+        fn take_cash(&mut self, amount: u128, target: AccountId) -> Result<AccountId, LAssetError> {
             let caller = self.env().caller();
             if caller != self.flash {
                 return Err(LAssetError::FlashContractOnly);
             }
-            self.transfer_underlying(target, amount).map_err(LAssetError::TakeCashFailed)
+            self.transfer_underlying(target, amount).map_err(LAssetError::TakeCashFailed)?;
+
+            Ok(self.underlying_token)
         }
 
         #[ink(message)]

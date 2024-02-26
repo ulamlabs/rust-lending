@@ -36,11 +36,10 @@ mod flash {
         #[ink(message)]
         fn flash_loan(&mut self, target_address: AccountId, pool_address: AccountId, amount: u128, data: Vec<u8>) -> Result<(), LAssetError>{
             let mut pool: contract_ref!(FlashLoanPool) = pool_address.into();
-            let mut underlying_token: contract_ref!(PSP22) = pool.underlying_token().into();
             let fee = self.calculate_fee(amount);
 
             // 1. Call the `take_cash` method of the pool to borrow the tokens
-            pool.take_cash(amount, target_address)?;
+            let mut underlying_token: contract_ref!(PSP22) = pool.take_cash(amount, target_address)?.into();
 
             // 2. Call the `on_flash_loan` method of the target
             let mut target: contract_ref!(FlashLoanReceiver) = target_address.into();

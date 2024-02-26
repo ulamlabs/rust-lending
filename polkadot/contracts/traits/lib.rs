@@ -10,8 +10,15 @@ pub use errors::{LAssetError, FlashCalleeError};
 #[ink::trait_definition]
 pub trait FlashLoanPool {
     /// Authorized method: only the flash loan contract can call it to receive funds
+    ///
+    /// Args:
+    /// - amount: the amount of tokens to borrow
+    /// - target: the address of the contract that will receive the funds
+    ///
+    /// Returns:
+    /// - the address of the token that was borrowed
     #[ink(message)]
-    fn take_cash(&mut self, amount: u128, target: AccountId) -> Result<(), LAssetError>;
+    fn take_cash(&mut self, amount: u128, target: AccountId) -> Result<AccountId, LAssetError>;
 
     #[ink(message)]
     fn underlying_token(&self) -> AccountId;
