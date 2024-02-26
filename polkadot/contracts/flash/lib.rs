@@ -11,6 +11,7 @@ mod flash {
         pub fee_per_million: u32,
     }
     use ink::contract_ref;
+    use ink::prelude::vec::Vec;
     use traits::{FlashLoanPool, FlashLoanContract, FlashLoanReceiver};
     use traits::psp22::PSP22;
     use traits::errors::LAssetError;
@@ -33,23 +34,22 @@ mod flash {
     impl FlashLoanContract for Flash {
         /// Borrow tokens from a lending pool
         #[ink(message)]
-        fn flash_loan(&mut self, pool_address: AccountId, amount: u128, target: AccountId, data: Vec<u8>) -> Result<(), LAssetError>{
+        fn flash_loan(&mut self, target_address: AccountId, pool_address: AccountId, amount: u128, data: Vec<u8>) -> Result<(), LAssetError>{
             let mut pool: contract_ref!(FlashLoanPool) = pool_address.into();
             let mut underlying_token: contract_ref!(PSP22) = pool.underlying_token().into();
+            let fee = self.calculate_fee(amount);
 
             // 1. Call the `take_cash` method of the pool to borrow the tokens
-            pool.take_cash(amount)?;
+            pool.take_cash(amount, target_address)?;
 
-            // 2. Call the `transfer` method of the underlying token to send the tokens to the target
-            underlying_token.transfer(target, amount, vec![]).map_err(LAssetError::FlashLoanTransferFailed)?;
+            // 2. Call the `on_flash_loan` method of the target
+            let mut target: contract_ref!(FlashLoanReceiver) = target_address.into();
+            target.on_flash_loan(self.env().caller(), *underlying_token.as_ref(), amount, fee, data).map_err(LAssetError::FlashLoanFailed)?;
 
-            // 3. Call the `on_flash_loan` method of the target
-            let mut target: contract_ref!(FlashLoanReceiver) = target.into();
-            target.on_flash_loan(amount, data).map_err(LAssetError::FlashLoanFailed)?;
-
-            // 4. Return the tokens to the pool
-            let new_amount = amount.saturating_add(self.calculate_fee(amount));
-            underlying_token.transfer(pool_address, new_amount, Vec::new()).map_err(LAssetError::FlashLoanTransferFailed)?;
+            // 3. Return the tokens to the pool
+            let new_amount = amount.saturating_add(fee);
+            underlying_token.transfer_from(target_address, pool_address, new_amount, Vec::new())
+                .map_err(LAssetError::FlashLoanTransferFailed)?;
             
             Ok(())
         }

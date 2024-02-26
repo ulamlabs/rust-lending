@@ -858,12 +858,12 @@ mod finance2 {
 
     impl FlashLoanPool for LAssetContract {
         #[ink(message)]
-        fn take_cash(&mut self, amount: u128) -> Result<(), LAssetError> {
+        fn take_cash(&mut self, amount: u128, target: AccountId) -> Result<(), LAssetError> {
             let caller = self.env().caller();
             if caller != self.flash {
                 return Err(LAssetError::FlashContractOnly);
             }
-            self.transfer_underlying(caller, amount).map_err(LAssetError::TakeCashFailed)
+            self.transfer_underlying(target, amount).map_err(LAssetError::TakeCashFailed)
         }
 
         #[ink(message)]

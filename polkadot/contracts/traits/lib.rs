@@ -11,7 +11,7 @@ pub use errors::{LAssetError, FlashCalleeError};
 pub trait FlashLoanPool {
     /// Authorized method: only the flash loan contract can call it to receive funds
     #[ink(message)]
-    fn take_cash(&mut self, amount: u128) -> Result<(), LAssetError>;
+    fn take_cash(&mut self, amount: u128, target: AccountId) -> Result<(), LAssetError>;
 
     #[ink(message)]
     fn underlying_token(&self) -> AccountId;
@@ -20,7 +20,7 @@ pub trait FlashLoanPool {
 #[ink::trait_definition]
 pub trait FlashLoanContract { 
     #[ink(message)]
-    fn flash_loan(&mut self, pool_address: AccountId, amount: u128, target: AccountId, data: Vec<u8>) -> Result<(), LAssetError>;
+    fn flash_loan(&mut self, target: AccountId, pool_address: AccountId, amount: u128, data: Vec<u8>) -> Result<(), LAssetError>;
 
     #[ink(message)]
     fn fee_per_million(&self) -> u32;
@@ -31,6 +31,9 @@ pub trait FlashLoanContract {
 
 #[ink::trait_definition]
 pub trait FlashLoanReceiver {
+    /// Interface for the flash loan receiver contract
+    /// The recipient must increase allowance in the calling contract by amount + fee
+    /// This interface is based on EIP-3156 (https://eips.ethereum.org/EIPS/eip-3156)
     #[ink(message)]
-    fn on_flash_loan(&mut self, amount: u128, data: Vec<u8>) -> Result<(), FlashCalleeError>;
+    fn on_flash_loan(&mut self, initiator: AccountId, token: AccountId, amount: u128, fee: u128, data: Vec<u8>) -> Result<(), FlashCalleeError>;
 }
