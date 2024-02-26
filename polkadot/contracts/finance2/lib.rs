@@ -1,10 +1,8 @@
 #![cfg_attr(not(feature = "std"), no_std, no_main)]
 
-use errors::LAssetError;
+use traits::errors::LAssetError;
 use ink::primitives::AccountId;
 
-mod errors;
-mod psp22;
 mod logic;
 
 #[cfg(test)]
@@ -24,10 +22,13 @@ pub trait LAsset {
 mod finance2 {
     #[cfg(not(test))]
     use ink::contract_ref;
-    use ink::prelude::vec::Vec;
-    use ink::prelude::string::String;
     #[cfg(not(test))]
     use ink::prelude::vec;
+    use ink::prelude::vec::Vec;
+    use ink::prelude::string::String;
+    use traits::FlashLoanPool;
+    use traits::errors::LAssetError;
+    use traits::psp22::{PSP22Error, PSP22Metadata, Transfer, Approval, PSP22};
     use crate::logic::{self, add, mulw, sub};
 
     //Solving problem with small borrows/deposits
@@ -36,8 +37,6 @@ mod finance2 {
 
     use ink::storage::Mapping;
     use crate::LAsset;
-    use crate::errors::LAssetError;
-    use crate::psp22::{PSP22Error, PSP22Metadata, Transfer, Approval, PSP22};
 
     #[ink(storage)]
     pub struct LAssetContract {
@@ -92,6 +91,9 @@ mod finance2 {
         name: Option<String>,
         symbol: Option<String>,
         decimals: u8,
+
+        // flash loan contract address
+        pub flash: AccountId,
     }
 
     
@@ -111,8 +113,10 @@ mod finance2 {
             maintenance_margin: u128,
             initial_haircut: u128,
             maintenance_haircut: u128,
+            flash: AccountId,
             discount: u128,
             price_scaler: u128,
+            flash: AccountId,
         ) -> Self {
             let (name, symbol, decimals) = fetch_psp22_metadata(underlying_token);
             let admin: AccountId = Self::env().caller();
@@ -147,6 +151,7 @@ mod finance2 {
                 name,
                 symbol,
                 decimals,
+                flash,
              }
         }
         #[ink(message)]
@@ -160,6 +165,17 @@ mod finance2 {
             Ok(())
         }
 
+        #[cfg(not(test))]
+        fn transfer_underlying(&self, to: AccountId, value: u128) -> Result<(), PSP22Error> {
+            let mut token: contract_ref!(PSP22) = self.underlying_token.into();
+            token.transfer(to, value, vec![])
+        }
+        #[cfg(test)]
+        #[allow(unused_variables)]
+        fn transfer_underlying(&self, to: AccountId, value: u128) -> Result<(), PSP22Error> {
+            Ok(())
+        }
+        
         //There function does not require anything
         //Depositing collateral is absolutely independent
         //The only risk is that use will deposit small amount of tokens
@@ -838,6 +854,22 @@ mod finance2 {
 
             let next = self.next;
             (next, collateral_value, debt_value)
+        }
+    }
+
+    impl FlashLoanPool for LAssetContract {
+        #[ink(message)]
+        fn take_cash(&mut self, amount: u128, target: AccountId) -> Result<(), LAssetError> {
+            let caller = self.env().caller();
+            if caller != self.flash {
+                return Err(LAssetError::FlashContractOnly);
+            }
+            self.transfer_underlying(target, amount).map_err(LAssetError::TakeCashFailed)
+        }
+
+        #[ink(message)]
+        fn underlying_token(&self) -> AccountId {
+            self.underlying_token
         }
     }
 
