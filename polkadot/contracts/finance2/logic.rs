@@ -2,16 +2,8 @@ use primitive_types::{U128, U256};
 
 pub struct Wide(U256);
 
-pub fn gte<E>(a: u128, b: u128, e: E) -> Result<(), E> {
-    if a < b {
-        Err(e)
-    } else {
-        Ok(())
-    }
-}
-
-pub fn lt<E>(a: u128, b: u128, e: E) -> Result<(), E> {
-    if a < b {
+pub fn require<E>(cond: bool, e: E) -> Result<(), E> {
+    if cond {
         Ok(())
     } else {
         Err(e)

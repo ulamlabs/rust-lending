@@ -1,9 +1,7 @@
 #![cfg_attr(not(feature = "std"), no_std, no_main)]
 
-use traits::errors::LAssetError;
-use ink::primitives::AccountId;
-
 mod logic;
+mod errors;
 
 #[cfg(test)]
 mod tests;
@@ -11,12 +9,20 @@ mod tests;
 #[ink::trait_definition]
 pub trait LAsset {
     #[ink(message)]
-    fn update(&mut self, user: AccountId) -> (AccountId, u128, u128);
+    fn update(
+        &mut self, 
+        user: ink::primitives::AccountId
+    ) -> (ink::primitives::AccountId, u128, u128);
 
     #[ink(message)]
-    fn repay_or_update(&mut self, user: AccountId, amount: u128, cash: u128, cash_owner: AccountId) -> Result<(AccountId, u128, u128, u128, u128, u128), LAssetError>;
+    fn repay_or_update(
+        &mut self, 
+        user: ink::primitives::AccountId, 
+        amount: u128, 
+        cash: u128, 
+        cash_owner: ink::primitives::AccountId
+    ) -> Result<(ink::primitives::AccountId, u128, u128, u128, u128, u128), crate::errors::LAssetError>;
 }
-
 
 #[ink::contract]
 mod finance2 {
@@ -24,12 +30,20 @@ mod finance2 {
     use ink::contract_ref;
     #[cfg(not(test))]
     use ink::prelude::vec;
+<<<<<<< HEAD
     use ink::prelude::vec::Vec;
     use ink::prelude::string::String;
     use traits::FlashLoanPool;
     use traits::errors::LAssetError;
     use traits::psp22::{PSP22Error, PSP22Metadata, Transfer, Approval, PSP22};
     use crate::logic::{self, add, mulw, sub};
+=======
+    use traits::errors::FlashLoanPoolError;
+    use traits::psp22::{PSP22, PSP22Error, PSP22Metadata, Transfer, Approval};
+    use traits::FlashLoanPool;
+    use crate::logic::{require, add, mulw, sub, Quoter, Accruer, Valuator};
+    use crate::errors::LAssetError;
+>>>>>>> 45b75e4 (optimizing build process)
 
     const GAS_COLLATERAL: u128 = 1_000_000; // TODO find something less random
     const DEFAULT_DECIMALS: u8 = 6;
@@ -147,9 +161,8 @@ mod finance2 {
         #[ink(message)]
         pub fn set_price(&mut self, price: u128) -> Result<(), LAssetError> {
             let caller = self.env().caller();
-            if caller != self.admin {
-                return Err(LAssetError::CallerIsNotAdmin);
-            }
+            require(caller == self.admin, LAssetError::SetPriceUnathorized)?;
+            
             self.price = price;
 
             Ok(())
@@ -215,7 +228,7 @@ mod finance2 {
             let total_borrowable = self.total_borrowable;
             let total_bonds = self.total_bonds;
 
-            let accruer = logic::Accruer {
+            let accruer = Accruer {
                 now: self.env().block_timestamp(),
                 updated_at: self.last_updated_at,
                 total_liquidity: self.last_total_liquidity,
@@ -227,7 +240,7 @@ mod finance2 {
             };
             let (total_liquidity, updated_at) = accruer.accrue();
 
-            let quoter = logic::Quoter {
+            let quoter = Quoter {
                 price: self.price,
                 price_scaler: self.price_scaler,
                 bonds,
@@ -236,7 +249,7 @@ mod finance2 {
             };
             let quoted_collateral = quoter.quote(new_collateral);
             let quoted_debt = quoter.quote_debt(total_borrowable);
-            let valuator = logic::Valuator {
+            let valuator = Valuator {
                 margin: self.initial_margin,
                 haircut: self.initial_haircut,
                 quoted_collateral,
@@ -258,7 +271,7 @@ mod finance2 {
                 total_icv = total_icv.saturating_add(icv);
                 total_idv = total_idv.saturating_add(idv);
             }
-            logic::gte(total_icv, total_idv, LAssetError::CollateralValueTooLow)?;
+            require(total_icv >= total_idv, LAssetError::CollateralValueTooLowAfterWithdraw)?;
 
             transfer(self.underlying_token, caller, GAS_COLLATERAL).map_err(LAssetError::WithdrawTransferFailed)
         }
@@ -273,7 +286,7 @@ mod finance2 {
             transfer_from(self.underlying_token, caller, this, amount).map_err(LAssetError::MintTransferFailed)?;
 
             let total_borrowable = self.total_borrowable;
-            let accruer = logic::Accruer {
+            let accruer = Accruer {
                 now: self.env().block_timestamp(),
                 updated_at: self.last_updated_at,
                 total_liquidity: self.last_total_liquidity,
@@ -313,7 +326,7 @@ mod finance2 {
             let caller = self.env().caller();
 
             let total_borrowable = self.total_borrowable;
-            let accruer = logic::Accruer {
+            let accruer = Accruer {
                 now: self.env().block_timestamp(),
                 updated_at: self.last_updated_at,
                 total_liquidity: self.last_total_liquidity,
@@ -355,7 +368,7 @@ mod finance2 {
             let this = self.env().account_id();
 
             let total_borrowable = self.total_borrowable;
-            let accruer = logic::Accruer {
+            let accruer = Accruer {
                 now: self.env().block_timestamp(),
                 updated_at: self.last_updated_at,
                 total_liquidity: self.last_total_liquidity,
@@ -367,7 +380,7 @@ mod finance2 {
             };
             let (total_liquidity, updated_at) = accruer.accrue();
 
-            let new_total_borrowable = total_borrowable.checked_sub(amount).ok_or(LAssetError::BorrowableOverflow)?;
+            let new_total_borrowable = total_borrowable.checked_sub(amount).ok_or(LAssetError::BorrowOverflow)?;
 
             let debt = sub(total_liquidity, total_borrowable);
             let total_bonds = self.total_bonds;
@@ -387,7 +400,7 @@ mod finance2 {
             let new_total_bonds = add(total_bonds, minted);
             let new_bonds = add(bonds, minted);
             
-            let quoter = logic::Quoter {
+            let quoter = Quoter {
                 price: self.price,
                 price_scaler: self.price_scaler,
                 bonds: new_bonds,
@@ -397,7 +410,7 @@ mod finance2 {
             let quoted_collateral = quoter.quote(collateral);
             let quoted_debt = quoter.quote_debt(new_total_borrowable);
 
-            let valuator = logic::Valuator {
+            let valuator = Valuator {
                 margin: self.initial_margin,
                 haircut: self.initial_haircut,
                 quoted_collateral,
@@ -419,7 +432,7 @@ mod finance2 {
                 total_icv = total_icv.saturating_add(icv);
                 total_idv = total_idv.saturating_add(idv);
             }
-            logic::gte(total_icv, total_idv, LAssetError::CollateralValueTooLow)?;
+            require(total_icv >= total_idv, LAssetError::CollateralValueTooLowAfterBorrow)?;
 
             transfer(self.underlying_token, caller, amount).map_err(LAssetError::BorrowTransferFailed)
         }
@@ -464,7 +477,7 @@ mod finance2 {
 
             let total_borrowable = self.total_borrowable;
 
-            let accruer = logic::Accruer {
+            let accruer = Accruer {
                 now: self.env().block_timestamp(),
                 updated_at: self.last_updated_at,
                 total_liquidity: self.last_total_liquidity,
@@ -478,7 +491,7 @@ mod finance2 {
             let collateral = self.collateral.get(user).ok_or(LAssetError::LiquidateForNothing)?;
 
             let bonds = self.bonds.get(user).unwrap_or(0);
-            let quoter = logic::Quoter {
+            let quoter = Quoter {
                 price: self.price,
                 price_scaler: self.price_scaler,
                 bonds,
@@ -500,7 +513,7 @@ mod finance2 {
             let total_borrowable = self.total_borrowable;
             let quoted_debt = quoter.quote(total_borrowable);
             
-            let initial_valuator = logic::Valuator {
+            let initial_valuator = Valuator {
                 margin: self.initial_margin,
                 haircut: self.initial_haircut,
                 quoted_collateral,
@@ -510,7 +523,7 @@ mod finance2 {
             total_icv = total_icv.saturating_add(icv);
             total_idv = total_idv.saturating_add(idv);
 
-            let mainteneance_valuator = logic::Valuator {
+            let mainteneance_valuator = Valuator {
                 margin: self.maintenance_margin,
                 haircut: self.maintenance_haircut,
                 quoted_collateral: quoted_old_collateral,
@@ -521,8 +534,8 @@ mod finance2 {
             total_mdv = total_mdv.saturating_add(mdv);
 
 
-            logic::lt(total_mdv, total_mcv, LAssetError::LiquidateTooEarly)?;
-            logic::lt(total_idv, total_icv, LAssetError::LiquidateTooMuch)?;
+            require(total_mdv < total_mcv, LAssetError::LiquidateTooEarly)?;
+            require(total_idv < total_icv, LAssetError::LiquidateTooMuch)?;
 
             transfer(self.underlying_token, caller, collateral_to_withdraw).map_err(LAssetError::LiquidateTransferFailed)
         }
@@ -530,14 +543,9 @@ mod finance2 {
         fn inner_repay(&mut self, caller: AccountId, user: AccountId, amount: u128, cash: u128, cash_owner: AccountId, total_borrowable: u128
         ) -> Result<(u128, u128, u128, u128, u128), LAssetError> {
             let bonds = self.bonds.get(user).ok_or(LAssetError::RepayWithoutBorrow)?;
+            let new_bonds = bonds.checked_sub(amount).ok_or(LAssetError::RepayOverflow)?;
 
-            let (amount, new_borrowed) = if let Some(r) = bonds.checked_sub(amount) {
-                Ok((amount, r))
-            } else {
-                Ok((bonds, 0))
-            }?;
-
-            let accruer = logic::Accruer {
+            let accruer = Accruer {
                 now: self.env().block_timestamp(),
                 updated_at: self.last_updated_at,
                 total_liquidity: self.last_total_liquidity,
@@ -562,7 +570,7 @@ mod finance2 {
             let new_total_bonds = sub(total_bonds, amount);
 
             self.total_bonds = new_total_bonds;
-            self.bonds.insert(user, &new_borrowed);
+            self.bonds.insert(user, &new_bonds);
             
             self.cash.insert(caller, &new_cash);
             
@@ -570,15 +578,15 @@ mod finance2 {
             self.last_total_liquidity = total_liquidity;
             self.last_updated_at = updated_at;
 
-            Ok((repaid, new_borrowable, new_total_bonds, new_borrowed, total_liquidity))
+            Ok((repaid, new_borrowable, new_total_bonds, new_bonds, total_liquidity))
         }
 
 
         #[ink(message)]
         pub fn repay(&mut self, user: AccountId, amount: u128, cash: u128) -> Result<(), LAssetError> {
             let caller = self.env().caller();
+            
             let this = self.env().account_id();
-
             transfer_from(self.underlying_token, caller, this, amount).map_err(LAssetError::RepayTransferFailed)?;
             self.inner_repay(caller, user, amount, cash, caller, self.total_borrowable)?;
 
@@ -591,18 +599,22 @@ mod finance2 {
         fn repay_or_update(&mut self, user: AccountId, amount: u128, cash: u128, cash_owner: AccountId) -> Result<(AccountId, u128, u128, u128, u128, u128), LAssetError> {
             let caller = self.env().caller();
 
-            let valid_caller = self.whitelist.get(cash_owner).ok_or(LAssetError::RepayNotWhitelisted)?;
+            let is_repay = if let Some(valid_caller) = self.whitelist.get(cash_owner) {
+                valid_caller == caller
+            } else {
+                false
+            };
             let total_borrowable = self.total_borrowable;
-            let (repaid, new_borrowable, new_total_bonds, new_bonds, total_liquidity) = if  caller == valid_caller {
+            let (repaid, new_borrowable, new_total_bonds, new_bonds, total_liquidity) = if is_repay {
                 let old_cash = self.cash.get(cash_owner).unwrap_or(0);
-                let new_cash = old_cash.checked_sub(cash).ok_or(LAssetError::RepayInsufficientCash)?;
+                let new_cash = old_cash.checked_sub(cash).ok_or(LAssetError::RepayInsufficientInternalCash)?;
 
                 self.whitelist.remove(caller);
                 self.cash.insert(caller, &new_cash);
 
                 self.inner_repay(cash_owner, user, amount, cash, cash_owner, total_borrowable)?
             } else {
-                let accurer = logic::Accruer {
+                let accurer = Accruer {
                     now: self.last_updated_at,
                     updated_at: self.last_updated_at,
                     total_liquidity: self.last_total_liquidity,
@@ -620,7 +632,7 @@ mod finance2 {
                 (0, total_borrowable, self.total_bonds, bonds, total_liquidity)
             };
 
-            let qouter = logic::Quoter {
+            let qouter = Quoter {
                 price: self.price,
                 price_scaler: self.price_scaler,
                 bonds: new_bonds,
@@ -631,7 +643,7 @@ mod finance2 {
             
             let quoted_collateral = qouter.quote(collateral);
             let quoted_debt = qouter.quote_debt(new_borrowable);
-            let initial_valuator = logic::Valuator {
+            let initial_valuator = Valuator {
                 margin: self.initial_margin,
                 haircut: self.initial_haircut,
                 quoted_collateral,
@@ -640,7 +652,7 @@ mod finance2 {
             let (icv, idv) = initial_valuator.values();
             
             let quoted_old_debt = qouter.quote_debt(total_borrowable);
-            let maintenance_valuator = logic::Valuator {
+            let maintenance_valuator = Valuator {
                 margin: self.maintenance_margin,
                 haircut: self.maintenance_haircut,
                 quoted_collateral,
@@ -660,7 +672,7 @@ mod finance2 {
             let total_bonds = self.total_bonds;
             let total_borrowable = self.total_borrowable;
             
-            let accruer = logic::Accruer {
+            let accruer = Accruer {
                 now: self.env().block_timestamp(),
                 updated_at: self.last_updated_at,
                 total_liquidity: self.last_total_liquidity,
@@ -675,7 +687,7 @@ mod finance2 {
             self.last_total_liquidity = total_liquidity;
             self.last_updated_at = updated_at;
 
-            let quoter = logic::Quoter {
+            let quoter = Quoter {
                 price: self.price,
                 price_scaler: self.price_scaler,
                 bonds,
@@ -684,7 +696,7 @@ mod finance2 {
             };
             let quoted_collateral = quoter.quote(collateral);
             let quoted_debt = quoter.quote_debt(total_borrowable);
-            let valuator = logic::Valuator {
+            let valuator = Valuator {
                 margin: self.initial_margin,
                 haircut: self.initial_haircut,
                 quoted_collateral,
@@ -698,19 +710,14 @@ mod finance2 {
 
     impl FlashLoanPool for LAssetContract {
         #[ink(message)]
-        fn take_cash(&mut self, amount: u128, target: AccountId) -> Result<AccountId, LAssetError> {
+        fn take_cash(&mut self, amount: u128, target: AccountId) -> Result<AccountId, FlashLoanPoolError> {
             let caller = self.env().caller();
-            if caller != self.flash {
-                return Err(LAssetError::FlashContractOnly);
-            }
-            self.transfer_underlying(target, amount).map_err(LAssetError::TakeCashFailed)?;
+            require(caller == self.flash, FlashLoanPoolError::TakeCashUnauthorized)?;
+            
+            let underlying_token = self.underlying_token;
+            transfer(underlying_token, target, amount).map_err(FlashLoanPoolError::TakeCashFailed)?;
 
-            Ok(self.underlying_token)
-        }
-
-        #[ink(message)]
-        fn underlying_token(&self) -> AccountId {
-            self.underlying_token
+            Ok(underlying_token)
         }
     }
 
