@@ -5,7 +5,7 @@ pub mod psp22;
 
 use ink::primitives::AccountId;
 use ink::prelude::vec::Vec;
-pub use errors::{LAssetError, FlashCalleeError};
+pub use errors::{FlashLoanReceiverError, FlashLoanPoolError};
 
 #[ink::trait_definition]
 pub trait FlashLoanPool {
@@ -18,22 +18,7 @@ pub trait FlashLoanPool {
     /// Returns:
     /// - the address of the token that was borrowed
     #[ink(message)]
-    fn take_cash(&mut self, amount: u128, target: AccountId) -> Result<AccountId, LAssetError>;
-
-    #[ink(message)]
-    fn underlying_token(&self) -> AccountId;
-}
-
-#[ink::trait_definition]
-pub trait FlashLoanContract { 
-    #[ink(message)]
-    fn flash_loan(&mut self, target: AccountId, pool_address: AccountId, amount: u128, data: Vec<u8>) -> Result<(), LAssetError>;
-
-    #[ink(message)]
-    fn fee_per_million(&self) -> u32;
-
-    #[ink(message)]
-    fn set_fee_per_million(&mut self, fee: u32) -> Result<(), LAssetError>;
+    fn take_cash(&mut self, amount: u128, target: AccountId) -> Result<AccountId, FlashLoanPoolError>;
 }
 
 #[ink::trait_definition]
@@ -42,5 +27,5 @@ pub trait FlashLoanReceiver {
     /// The recipient must increase allowance in the calling contract by amount + fee
     /// This interface is based on EIP-3156 (https://eips.ethereum.org/EIPS/eip-3156)
     #[ink(message)]
-    fn on_flash_loan(&mut self, initiator: AccountId, token: AccountId, amount: u128, fee: u128, data: Vec<u8>) -> Result<(), FlashCalleeError>;
+    fn on_flash_loan(&mut self, initiator: AccountId, token: AccountId, amount: u128, fee: u128, data: Vec<u8>) -> Result<(), FlashLoanReceiverError>;
 }
