@@ -3,9 +3,6 @@
 mod logic;
 mod errors;
 
-#[cfg(test)]
-mod tests;
-
 #[ink::trait_definition]
 pub trait LAsset {
     #[ink(message)]
@@ -26,24 +23,13 @@ pub trait LAsset {
 
 #[ink::contract]
 mod finance2 {
-    #[cfg(not(test))]
-    use ink::contract_ref;
-    #[cfg(not(test))]
-    use ink::prelude::vec;
-<<<<<<< HEAD
     use ink::prelude::vec::Vec;
     use ink::prelude::string::String;
-    use traits::FlashLoanPool;
-    use traits::errors::LAssetError;
-    use traits::psp22::{PSP22Error, PSP22Metadata, Transfer, Approval, PSP22};
-    use crate::logic::{self, add, mulw, sub};
-=======
     use traits::errors::FlashLoanPoolError;
     use traits::psp22::{PSP22, PSP22Error, PSP22Metadata, Transfer, Approval};
     use traits::FlashLoanPool;
     use crate::logic::{require, add, mulw, sub, Quoter, Accruer, Valuator};
     use crate::errors::LAssetError;
->>>>>>> 45b75e4 (optimizing build process)
 
     const GAS_COLLATERAL: u128 = 1_000_000; // TODO find something less random
     const DEFAULT_DECIMALS: u8 = 6;
@@ -168,17 +154,6 @@ mod finance2 {
             Ok(())
         }
 
-        #[cfg(not(test))]
-        fn transfer_underlying(&self, to: AccountId, value: u128) -> Result<(), PSP22Error> {
-            let mut token: contract_ref!(PSP22) = self.underlying_token.into();
-            token.transfer(to, value, vec![])
-        }
-        #[cfg(test)]
-        #[allow(unused_variables)]
-        fn transfer_underlying(&self, to: AccountId, value: u128) -> Result<(), PSP22Error> {
-            Ok(())
-        }
-        
         //There function does not require anything
         //Depositing collateral is absolutely independent
         //The only risk is that use will deposit small amount of tokens
@@ -870,7 +845,7 @@ mod finance2 {
     /// If the asset is not compatible with PSP22Metadata, the decimals will be set to 6
     fn fetch_psp22_metadata(token: AccountId) -> (Option<String>, Option<String>, u8) {
         use ink::codegen::TraitCallBuilder;
-        let token: contract_ref!(PSP22Metadata) = token.into();
+        let token: ink::contract_ref!(PSP22Metadata) = token.into();
         let name = token.call().token_name().transferred_value(0).try_invoke().unwrap_or(Ok(None)).unwrap_or(None);
         let symbol = token.call().token_symbol().transferred_value(0).try_invoke().unwrap_or(Ok(None)).unwrap_or(None);
         let decimals = token.call().token_decimals().transferred_value(0).try_invoke().unwrap_or(Ok(DEFAULT_DECIMALS)).unwrap_or(DEFAULT_DECIMALS);
@@ -904,7 +879,7 @@ mod finance2 {
 
     #[cfg(not(test))]
     fn update_next(next: &AccountId, user: &AccountId) -> (AccountId, u128, u128) {
-        let mut next: contract_ref!(LAsset) = (*next).into();
+        let mut next: ink::contract_ref!(LAsset) = (*next).into();
         next.update(*user)
     }
 
@@ -926,7 +901,7 @@ mod finance2 {
 
     #[cfg(not(test))]
     fn repay_or_update(app: AccountId, user: AccountId, amount: u128, cash: u128, cash_owner: AccountId) -> Result<(AccountId, u128, u128, u128, u128, u128), LAssetError> {
-        let mut app: contract_ref!(LAsset) = app.into();
+        let mut app: ink::contract_ref!(LAsset) = app.into();
         app.repay_or_update(user, amount, cash, cash_owner)
     }
     #[cfg(test)]
@@ -947,8 +922,8 @@ mod finance2 {
 
     #[cfg(not(test))]
     fn transfer_from(token: AccountId, from: AccountId, to: AccountId, value: u128) -> Result<(), PSP22Error> {
-        let mut token: contract_ref!(PSP22) = token.into();
-        token.transfer_from(from, to, value, vec![])
+        let mut token: ink::contract_ref!(PSP22) = token.into();
+        token.transfer_from(from, to, value, Vec::default())
     }
     #[cfg(test)]
     #[allow(unused_variables)]
@@ -958,8 +933,8 @@ mod finance2 {
 
     #[cfg(not(test))]
     fn transfer(token: AccountId, to: AccountId, value: u128) -> Result<(), PSP22Error> {
-        let mut token: contract_ref!(PSP22) = token.into();
-        token.transfer(to, value, vec![])
+        let mut token: ink::contract_ref!(PSP22) = token.into();
+        token.transfer(to, value, Vec::default())
     }
     #[cfg(test)]
     #[allow(unused_variables)]
@@ -967,3 +942,6 @@ mod finance2 {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;
