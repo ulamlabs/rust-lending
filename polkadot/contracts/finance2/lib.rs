@@ -262,12 +262,12 @@ mod finance2 {
             let to_mint = mulw(to_wrap, total_shares).div_rate(total_liquidity).unwrap_or(to_wrap); //TODO: prove it
             let new_total_shares = add(total_shares, to_mint); //TODO: prove it
             let new_shares = add(shares, to_mint); //TODO: prove it
-            let new_borrowable = add(total_borrowable, to_wrap); //TODO: prove it
+            let new_total_borrowable = add(total_borrowable, to_wrap); //TODO: prove it
 
             self.total_shares = new_total_shares;
             self.shares.insert(caller, &new_shares);
             
-            self.total_borrowable = new_borrowable;
+            self.total_borrowable = new_total_borrowable;
             self.last_total_liquidity = new_total_liquidity;
             self.last_updated_at = updated_at;
             
@@ -298,7 +298,7 @@ mod finance2 {
 
             let new_shares = shares.checked_sub(to_burn).ok_or(LAssetError::BurnOverflow)?;
             let to_withdraw = mulw(to_burn, total_liquidity).div_rate(total_shares).unwrap_or(0); //TODO: prove it
-            let new_total_borrowable: u128 = total_borrowable.checked_sub(to_withdraw).ok_or(LAssetError::BurnTooMuch)?;
+            let new_total_borrowable = total_borrowable.checked_sub(to_withdraw).ok_or(LAssetError::BurnTooMuch)?;
             let new_total_shares = sub(total_shares, to_burn); //TODO: prove it
             let new_total_liquidity = sub(total_liquidity, to_withdraw); //TODO: prove it
 
@@ -487,15 +487,15 @@ mod finance2 {
             
             let total_debt = sub(total_liquidity, total_borrowable); //TODO: prove it
             let total_bonds = self.total_bonds;
-            let repaid = mulw(amount, total_debt).ceil_rate(total_bonds).unwrap_or(0); //TODO: prove it
+            let repaid = mulw(amount, total_debt).ceil_rate(total_bonds).unwrap_or(total_debt); //TODO: prove it
             let new_cash = cash.checked_sub(repaid).ok_or(LAssetError::RepayInsufficientCash)?;
 
-            let new_borrowable = add(total_borrowable, repaid); //TODO: prove it
+            let new_total_borrowable = add(total_borrowable, repaid); //TODO: prove it
             let new_total_bonds = sub(total_bonds, amount); //TODO: prove it
 
             self.cash.insert(caller, &new_cash);
             
-            self.total_borrowable = new_borrowable;
+            self.total_borrowable = new_total_borrowable;
             self.last_total_liquidity = total_liquidity;
             self.last_updated_at = updated_at;
             
@@ -506,7 +506,7 @@ mod finance2 {
                 self.bonds.remove(user);
                 self.env().transfer(caller, self.gas_collateral).ok().ok_or(LAssetError::RepayGasTransferFailed)?; //TODO: map_err
             }
-            Ok((repaid, new_borrowable, new_total_bonds, new_bonds, total_liquidity))
+            Ok((repaid, new_total_borrowable, new_total_bonds, new_bonds, total_liquidity))
         }
 
 
@@ -548,7 +548,7 @@ mod finance2 {
                 let qouted_repaid = mulw(repaid, price).ceil_up(price_scaler).unwrap_or(u128::MAX);
                 
                 let total_debt = sub(total_liquidity, new_borrowable); //TODO: prove it
-                let debt = mulw(new_bonds, total_debt).ceil_up(new_total_bonds).unwrap_or(0);
+                let debt = mulw(new_bonds, total_debt).ceil_up(new_total_bonds).unwrap_or(total_debt);
                 let qouted_debt = mulw(debt, price).ceil_up(price_scaler).unwrap_or(u128::MAX);
                 let mdv = mulw(qouted_debt, self.maintenance_margin).scale_up().saturating_add(qouted_debt);
 
@@ -580,10 +580,8 @@ mod finance2 {
                     let mcv = mulw(qouted_collateral, self.maintenance_haircut).scale();
                     Ok((self.next, 0, icv, 0, mcv, 0))
                 } else if let Some(b) = self.bonds.get(user) {
-                    //TODO: prove it
-                    let total_debt = sub(total_liquidity, total_borrowable);
-                    //TODO: prove it
-                    let debt = mulw(b, total_debt).ceil_rate(self.total_bonds).unwrap_or(total_debt);
+                    let total_debt = sub(total_liquidity, total_borrowable); //TODO: prove it
+                    let debt = mulw(b, total_debt).ceil_rate(self.total_bonds).unwrap_or(total_debt); //TODO: prove it
                     let qouted_debt = mulw(debt, self.price).ceil_up(self.price_scaler).unwrap_or(u128::MAX);
                     let idv = mulw(qouted_debt, self.initial_margin).scale_up().saturating_add(qouted_debt);
                     let mdv = mulw(qouted_debt, self.maintenance_margin).scale_up().saturating_add(qouted_debt);
