@@ -62,30 +62,6 @@ impl Wide {
         add(self.scale(), c)
     }
 }
-
-pub struct Quoter {
-    pub price: u128,
-    pub price_scaler: u128,
-    pub bonds: u128,
-    pub total_bonds: u128,
-    pub total_liquidity: u128,
-}
-impl Quoter {
-    pub fn quote(&self, collateral: u128) -> u128 {
-        mulw(collateral, self.price).div(self.price_scaler).unwrap_or(u128::MAX)
-    }
-    pub fn quote_debt(&self, total_borrowable: u128) -> u128 {
-        let debt = sub(self.total_liquidity, total_borrowable);
-        let user_debt = mulw(self.bonds, debt).ceil_up(self.total_bonds).unwrap_or(debt);
-
-        mulw(user_debt, self.price).ceil_up(self.price_scaler).unwrap_or(u128::MAX)
-    }
-    pub fn dequote(&self, discount: u128, qouted: u128) -> u128 {
-        let price = mulw(self.price, discount).scale_up();
-        mulw(qouted, self.price_scaler).div(price).unwrap_or(u128::MAX)
-    }
-}
-
 pub struct Accruer {
     pub now: u64,
     pub updated_at: u64,
@@ -126,22 +102,5 @@ impl Accruer {
 
         let new_total_liquidity = self.total_liquidity.saturating_add(interest);
         (new_total_liquidity, now)
-    }
-}
-
-pub struct Valuator {
-    pub margin: u128,
-    pub haircut: u128,
-    pub quoted_collateral: u128,
-    pub quoted_debt: u128,
-}
-impl Valuator {
-    pub fn values(self) -> (u128, u128) {
-        let collateral_value = mulw(self.quoted_collateral, self.haircut).scale();
-        
-        let extra_debt = mulw(self.quoted_debt, self.margin).scale();
-        let debt_value = self.quoted_debt.saturating_add(extra_debt);
-
-        (collateral_value, debt_value)
     }
 }
