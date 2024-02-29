@@ -1,5 +1,6 @@
 use traits::psp22::PSP22Error;
 
+#[derive(Debug)]
 #[ink::scale_derive(Encode, Decode, TypeInfo)]
 pub enum LAssetError {
     DepositOverflow,
@@ -49,5 +50,10 @@ pub enum LAssetError {
 
     SetPriceUnathorized,
 
+    SetParamsUnathorized,
+
     TryCloseTransferFailed,
+
+    #[cfg(test)]
+    TestError(String),
 }

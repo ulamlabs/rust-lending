@@ -30,8 +30,6 @@ mod finance2 {
     use crate::logic::{require, add, mulw, sub, Accruer};
     use crate::errors::LAssetError;
 
-    const DEFAULT_DECIMALS: u8 = 6;
-
     use ink::storage::Mapping;
     use crate::LAsset;
 
@@ -81,7 +79,6 @@ mod finance2 {
         symbol: Option<String>,
         decimals: u8,
 
-        flash: AccountId,
         gas_collateral: u128,
     }
 
@@ -91,17 +88,6 @@ mod finance2 {
         pub fn new(
             underlying_token: AccountId,
             next: AccountId,
-            standard_rate: u128,
-            standard_min_rate: u128,
-            emergency_rate: u128,
-            emergency_max_rate: u128,
-            initial_margin: u128,
-            maintenance_margin: u128,
-            initial_haircut: u128,
-            maintenance_haircut: u128,
-            discount: u128,
-            price_scaler: u128,
-            flash: AccountId,
             gas_collateral: u128,
         ) -> Self {
             let (name, symbol, decimals) = fetch_psp22_metadata(underlying_token);
@@ -121,26 +107,53 @@ mod finance2 {
                 total_borrowable: 0,
                 total_bonds: 0,
                 bonds: Mapping::new(),
-                standard_rate,
-                standard_min_rate,
-                emergency_rate,
-                emergency_max_rate,
-                initial_margin,
-                maintenance_margin,
-                initial_haircut,
-                maintenance_haircut,
-                discount,
+                standard_rate: 0,
+                standard_min_rate: 0,
+                emergency_rate: 0,
+                emergency_max_rate: 0,
+                initial_margin: 0,
+                maintenance_margin: 0,
+                initial_haircut: 0,
+                maintenance_haircut: 0,
+                discount: 0,
                 price: 0,
-                price_scaler,
+                price_scaler: 1,
                 cash: Mapping::new(),
                 whitelist: Mapping::new(),
                 name,
                 symbol,
                 decimals,
-                flash,
                 gas_collateral,
              }
         }
+        pub fn set_params(
+            &mut self,
+            standard_rate: u128,
+            standard_min_rate: u128,
+            emergency_rate: u128,
+            emergency_max_rate: u128,
+            initial_margin: u128,
+            maintenance_margin: u128,
+            initial_haircut: u128,
+            maintenance_haircut: u128,
+            discount: u128,
+        ) -> Result<(), LAssetError> {
+            let caller = self.env().caller();
+            require(caller == self.admin, LAssetError::SetParamsUnathorized)?;
+
+            self.standard_rate = standard_rate;
+            self.standard_min_rate = standard_min_rate;
+            self.emergency_rate = emergency_rate;
+            self.emergency_max_rate = emergency_max_rate;
+            self.initial_margin = initial_margin;
+            self.maintenance_margin = maintenance_margin;
+            self.initial_haircut = initial_haircut;
+            self.maintenance_haircut = maintenance_haircut;
+            self.discount = discount;
+
+            Ok(())
+        }
+
         #[ink(message)]
         pub fn set_price(&mut self, price: u128, price_scaler: u128) -> Result<(), LAssetError> {
             let caller = self.env().caller();
@@ -466,10 +479,11 @@ mod finance2 {
             transfer(self.underlying_token, caller, to_take).map_err(LAssetError::LiquidateTransferFailed)
         }
 
-        fn inner_repay(&mut self, caller: AccountId, user: AccountId, to_repay: u128, cash: u128
+        fn inner_repay(&mut self, caller: AccountId, user: AccountId, to_leave: u128, cash: u128
         ) -> Result<(u128, u128, u128, u128, u128), LAssetError> {
             let bonds = self.bonds.get(user).ok_or(LAssetError::RepayWithoutBorrow)?;
-            let new_bonds = bonds.checked_sub(to_repay).ok_or(LAssetError::RepayOverflow)?;
+            let new_bonds = mulw(to_leave, bonds).scale();
+            let to_repay = sub(bonds, new_bonds); //TODO: prove it
             let total_borrowable = self.total_borrowable;
 
             let accruer = Accruer {
@@ -613,8 +627,8 @@ mod finance2 {
                 let icv = mulw(qouted_collateral, self.initial_haircut).scale();
                 (self.next, icv, 0)
             } else if let Some(b) = self.bonds.get(user) {
-                let total_debt = sub(total_liquidity, total_borrowable); //TODO: prove it
-                let debt = mulw(b, total_debt).ceil_rate(self.total_bonds).unwrap_or(total_debt); //TODO: prove it
+                let total_debt = sub(total_liquidity, total_borrowable); //PROVED
+                let debt = mulw(b, total_debt).ceil_rate(self.total_bonds).unwrap_or(total_debt); //PROVED
                 let qouted_debt = mulw(debt, self.price).ceil_up(self.price_scaler).unwrap_or(u128::MAX);
                 let idv = mulw(qouted_debt, self.initial_margin).scale_up().saturating_add(qouted_debt);
                 (self.next, 0, idv)
@@ -628,7 +642,7 @@ mod finance2 {
         #[ink(message)]
         fn take_cash(&mut self, amount: u128, target: AccountId) -> Result<AccountId, FlashLoanPoolError> {
             let caller = self.env().caller();
-            require(caller == self.flash, FlashLoanPoolError::TakeCashUnauthorized)?;
+            require(caller == self.admin, FlashLoanPoolError::TakeCashUnauthorized)?;
             
             let underlying_token = self.underlying_token;
             transfer(underlying_token, target, amount).map_err(FlashLoanPoolError::TakeCashFailed)?;
@@ -744,6 +758,7 @@ mod finance2 {
     #[cfg(not(test))]
     /// If the asset is not compatible with PSP22Metadata, the decimals will be set to 6
     fn fetch_psp22_metadata(token: AccountId) -> (Option<String>, Option<String>, u8) {
+        const DEFAULT_DECIMALS: u8 = 6;
         use ink::codegen::TraitCallBuilder;
         let token: ink::contract_ref!(PSP22Metadata) = token.into();
         let name = token.call().token_name().transferred_value(0).try_invoke().unwrap_or(Ok(None)).unwrap_or(None);
@@ -771,11 +786,11 @@ mod finance2 {
     }
 
     #[cfg(test)]
-    static mut L_BTC: Option<LAssetContract> = None;
+    pub static mut L_BTC: Option<LAssetContract> = None;
     #[cfg(test)]
-    static mut L_USDC: Option<LAssetContract> = None;
+    pub static mut L_USDC: Option<LAssetContract> = None;
     #[cfg(test)]
-    static mut L_ETH: Option<LAssetContract> = None;
+    pub static mut L_ETH: Option<LAssetContract> = None;
 
     #[cfg(not(test))]
     fn update_next(next: &AccountId, user: &AccountId) -> (AccountId, u128, u128) {
