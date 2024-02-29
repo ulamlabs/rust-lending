@@ -2,6 +2,7 @@ use ink::primitives::AccountId;
 use ink::prelude::vec::Vec;
 use ink::prelude::string::String;
 
+#[derive(Debug)]
 #[ink::scale_derive(Encode, Decode, TypeInfo)]
 pub enum PSP22Error {
     /// Custom error type for implementation-based errors.
