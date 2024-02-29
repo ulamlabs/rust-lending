@@ -123,12 +123,13 @@ s.add(total_collateral0 == 0, collateral0 == 0, last_total_liquidity0 == 0, tota
 total_collateral1, collateral1, last_total_liquidity1, total_shares1, shares1, total_borrowable1, total_bonds1, bonds1 = f('1', total_collateral0, collateral0, last_total_liquidity0, total_shares0, shares0, total_borrowable0, total_bonds0, bonds0)
 total_collateral2, collateral2, last_total_liquidity2, total_shares2, shares2, total_borrowable2, total_bonds2, bonds2 = f('2', total_collateral1, collateral1, last_total_liquidity1, total_shares1, shares1, total_borrowable1, total_bonds1, bonds1)
 total_collateral3, collateral3, last_total_liquidity3, total_shares3, shares3, total_borrowable3, total_bonds3, bonds3 = f('3', total_collateral2, collateral2, last_total_liquidity2, total_shares2, shares2, total_borrowable2, total_bonds2, bonds2)
-total_collateral4, collateral4, last_total_liquidity4, total_shares4, shares4, total_borrowable4, total_bonds4, bonds4 = f('4', total_collateral3, collateral3, last_total_liquidity3, total_shares3, shares3, total_borrowable3, total_bonds3, bonds3)
 
 s.add(z3.Distinct(*callers))
 
-if s.check(z3.Or(*assumptions)) == z3.unsat:
-    print("OK")
-else:
-    m = s.model()
-    print(m)
+for a in assumptions:
+    print('checking...', a)
+    if s.check(a) == z3.unsat:
+        print("OK")
+    else:
+        m = s.model()
+        print("FAILED", m)
