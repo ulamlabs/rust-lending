@@ -125,6 +125,7 @@ mod finance2 {
                 gas_collateral,
              }
         }
+        #[allow(clippy::too_many_arguments)]
         pub fn set_params(
             &mut self,
             standard_rate: u128,
@@ -526,7 +527,7 @@ mod finance2 {
 
 
         #[ink(message)]
-        pub fn repay(&mut self, user: AccountId, to_leave: u128, extra_cash: u128) -> Result<(), LAssetError> {
+        pub fn repay(&mut self, user: AccountId, extra_cash: u128) -> Result<(), LAssetError> {
             let caller = self.env().caller();
             
             let this = self.env().account_id();
@@ -534,7 +535,7 @@ mod finance2 {
 
             let cash = self.cash.get(caller).unwrap_or(0);
             let new_cash = cash.checked_add(extra_cash).ok_or(LAssetError::RepayCashOverflow)?;
-            self.inner_repay(caller, user, to_leave, new_cash)?;
+            self.inner_repay(caller, user, new_cash)?;
 
             Ok(())
         }
