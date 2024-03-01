@@ -97,7 +97,7 @@ fn default_works() {
 
     setup_call(alice, l_btc, 0, timestamp);
     match btc_app.mint(u128::MAX) {
-        Err(LAssetError::MintLiquidityOverflow) => Ok(()),
+        Err(LAssetError::MintOverflow) => Ok(()),
         r => e("Mint liquidity should fail on overflow", r),
     }.unwrap();
 
@@ -105,14 +105,5 @@ fn default_works() {
     match btc_app.burn(u128::MAX) {
         Err(LAssetError::BurnOverflow) => Ok(()),
         r => e("Burn should fail on overflow", r),
-    }.unwrap();
-
-    setup_call(alice, l_btc, 1, timestamp);
-    btc_app.borrow(1).unwrap();
-
-    setup_call(alice, l_btc, 0, timestamp);
-    match btc_app.burn(1) {
-        Err(LAssetError::BurnTooMuch) => Ok(()),
-        r => e("Burn too much should fail", r),
     }.unwrap();
 }

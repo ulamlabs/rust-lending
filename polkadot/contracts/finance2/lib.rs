@@ -34,51 +34,53 @@ mod finance2 {
 
     #[ink(storage)]
     pub struct LAssetContract {
-        admin: AccountId,
-        underlying_token: AccountId,
-        last_updated_at: Timestamp,
+        pub admin: AccountId,
+        pub underlying_token: AccountId,
+        pub last_updated_at: Timestamp,
 
-        next: AccountId,
+        pub next: AccountId,
 
-        total_collateral: u128,
-        collateral: Mapping<AccountId, u128>,
+        pub total_collateral: u128,
+        pub collateral: Mapping<AccountId, u128>,
     
-        last_total_liquidity: u128,
-        total_borrowable: u128,
+        pub last_total_liquidity: u128,
+        pub total_borrowable: u128,
     
-        total_shares: u128,
-        shares: Mapping<AccountId, u128>,
-        allowance: Mapping<(AccountId, AccountId), u128>,
+        pub total_shares: u128,
+        pub shares: Mapping<AccountId, u128>,
+        pub allowance: Mapping<(AccountId, AccountId), u128>,
     
-        total_bonds: u128,
-        bonds: Mapping<AccountId, u128>,
+        pub total_bonds: u128,
+        pub bonds: Mapping<AccountId, u128>,
 
-        standard_rate: u128,
-        standard_min_rate: u128,
+        pub standard_rate: u128,
+        pub standard_min_rate: u128,
 
-        emergency_rate: u128,
-        emergency_max_rate: u128,
+        pub emergency_rate: u128,
+        pub emergency_max_rate: u128,
 
-        initial_margin: u128,
-        maintenance_margin: u128,
+        pub initial_margin: u128,
+        pub maintenance_margin: u128,
 
-        initial_haircut: u128,
-        maintenance_haircut: u128,
+        pub initial_haircut: u128,
+        pub maintenance_haircut: u128,
 
-        discount: u128,
+        pub burn_haircut: u128,
+        pub repay_haircut: u128,
+        pub liquidation_reward: u128,
 
-        price: u128,
-        price_scaler: u128,
+        pub price: u128,
+        pub price_scaler: u128,
 
-        cash: Mapping<AccountId, u128>,
-        whitelist: Mapping<AccountId, AccountId>,
+        pub cash: Mapping<AccountId, u128>,
+        pub whitelist: Mapping<AccountId, AccountId>,
 
         // PSP22Metadata
-        name: Option<String>,
-        symbol: Option<String>,
-        decimals: u8,
+        pub name: Option<String>,
+        pub symbol: Option<String>,
+        pub decimals: u8,
 
-        gas_collateral: u128,
+        pub gas_collateral: u128,
     }
 
     impl LAssetContract {
@@ -112,9 +114,11 @@ mod finance2 {
                 emergency_max_rate: 0,
                 initial_margin: 0,
                 maintenance_margin: 0,
-                initial_haircut: 0,
-                maintenance_haircut: 0,
-                discount: 0,
+                initial_haircut: u128::MAX,
+                maintenance_haircut: u128::MAX,
+                burn_haircut: u128::MAX,
+                repay_haircut: u128::MAX,
+                liquidation_reward: 0,
                 price: 0,
                 price_scaler: 1,
                 cash: Mapping::new(),
@@ -136,7 +140,9 @@ mod finance2 {
             maintenance_margin: u128,
             initial_haircut: u128,
             maintenance_haircut: u128,
-            discount: u128,
+            burn_haircut: u128,
+            repay_haircut: u128,
+            liquidation_reward: u128,
         ) -> Result<(), LAssetError> {
             let caller = self.env().caller();
             require(caller == self.admin, LAssetError::SetParamsUnathorized)?;
@@ -149,7 +155,9 @@ mod finance2 {
             self.maintenance_margin = maintenance_margin;
             self.initial_haircut = initial_haircut;
             self.maintenance_haircut = maintenance_haircut;
-            self.discount = discount;
+            self.burn_haircut = burn_haircut;
+            self.repay_haircut = repay_haircut;
+            self.liquidation_reward = liquidation_reward;
 
             Ok(())
         }
@@ -228,8 +236,11 @@ mod finance2 {
                 self.env().transfer(caller, self.gas_collateral).ok().ok_or(LAssetError::WithdrawGasTransferFailed)?; //TODO: map_err
             }
 
-            let quoted_collateral = mulw(new_collateral, self.price).div(self.price_scaler).unwrap_or(u128::MAX);
-            let mut total_icv = mulw(quoted_collateral, self.initial_haircut).scale();
+            let mut total_icv = if let Some(qouted_collateral) = mulw(new_collateral, self.price).div(self.price_scaler) {
+                mulw(qouted_collateral, self.initial_haircut).scale()
+            } else {
+                u128::MAX
+            };
             let mut total_idv: u128 = 0;
 
             let mut current = self.next;
@@ -240,7 +251,7 @@ mod finance2 {
                 total_icv = total_icv.saturating_add(icv);
                 total_idv = total_idv.saturating_add(idv);
             }
-            require(total_icv >= total_idv, LAssetError::CollateralValueTooLowAfterWithdraw)?;
+            require(total_idv == 0 || total_icv > total_idv, LAssetError::CollateralValueTooLowAfterWithdraw)?;
 
             transfer(self.underlying_token, caller, to_withdraw).map_err(LAssetError::WithdrawTransferFailed)
         }
@@ -269,7 +280,7 @@ mod finance2 {
             let total_shares = self.total_shares;
             let shares = self.shares.get(caller).unwrap_or(0);
             
-            let new_total_liquidity = total_liquidity.checked_add(to_wrap).ok_or(LAssetError::MintLiquidityOverflow)?;
+            let new_total_liquidity = total_liquidity.checked_add(to_wrap).ok_or(LAssetError::MintOverflow)?;
             
             let to_mint = mulw(to_wrap, total_shares).div_rate(total_liquidity).unwrap_or(to_wrap); //PROVED
             let new_total_shares = add(total_shares, to_mint); //PROVED
@@ -309,7 +320,8 @@ mod finance2 {
             let shares = self.shares.get(caller).unwrap_or(0);
 
             let new_shares = shares.checked_sub(to_burn).ok_or(LAssetError::BurnOverflow)?;
-            let to_withdraw = mulw(to_burn, total_liquidity).div_rate(total_shares).unwrap_or(0); //PROVED
+            let real_total_liquidity = mulw(total_liquidity, self.burn_haircut).scale();
+            let to_withdraw = mulw(to_burn, real_total_liquidity).div_rate(total_shares).unwrap_or(0); //PROVED
             let new_total_borrowable = total_borrowable.checked_sub(to_withdraw).ok_or(LAssetError::BurnTooMuch)?;
             let new_total_shares = sub(total_shares, to_burn); //PROVED
             let new_total_liquidity = sub(total_liquidity, to_withdraw); //PROVED
@@ -382,7 +394,7 @@ mod finance2 {
                 total_icv = total_icv.saturating_add(icv);
                 total_idv = total_idv.saturating_add(idv);
             }
-            require(total_icv >= total_idv, LAssetError::CollateralValueTooLowAfterBorrow)?;
+            require(total_icv > total_idv, LAssetError::CollateralValueTooLowAfterBorrow)?;
 
             transfer(self.underlying_token, caller, to_borrow).map_err(LAssetError::BorrowTransferFailed)
         }
@@ -450,8 +462,8 @@ mod finance2 {
 
             let price = self.price;
             let price_scaler = self.price_scaler;
-            let discounted_price = mulw(price, self.discount).scale_up();
-            let to_take = mulw(total_repaid, price_scaler).div(discounted_price).unwrap_or(u128::MAX);
+            let repaid_collateral = mulw(total_repaid, price_scaler).div(price).unwrap_or(u128::MAX);
+            let to_take = mulw(repaid_collateral, self.liquidation_reward).scale_up().saturating_add(repaid_collateral);
 
             let new_collateral = collateral.checked_sub(to_take).ok_or(LAssetError::LiquidateCollateralOverflow)?;
             let new_total_collateral = sub(self.total_collateral, to_take); //PROVED
@@ -467,11 +479,16 @@ mod finance2 {
                 self.env().transfer(caller, self.gas_collateral).ok().ok_or(LAssetError::LiquidateGasTransferFailed)?; //TODO: map_err
             }
 
-            let quoted_collateral = mulw(collateral, price).div(price_scaler).unwrap_or(u128::MAX);
-            total_icv = mulw(quoted_collateral, self.initial_haircut).scale().saturating_add(total_icv);
-            
-            let qouted_new_collateral = mulw(new_collateral, price).div(price_scaler).unwrap_or(u128::MAX);
-            total_mcv = mulw(qouted_new_collateral, self.maintenance_haircut).scale().saturating_add(total_mcv);
+            total_icv = if let Some(qouted_collateral) = mulw(collateral, price).div(price_scaler) {
+                mulw(qouted_collateral, self.initial_haircut).scale().saturating_add(total_icv)
+            } else {
+                u128::MAX
+            };
+            total_mcv = if let Some(qouted_new_collateral) = mulw(new_collateral, price).div(price_scaler) {
+                mulw(qouted_new_collateral, self.maintenance_haircut).scale().saturating_add(total_mcv)
+            } else {
+                u128::MAX
+            };
 
             require(total_mdv < total_mcv, LAssetError::LiquidateTooEarly)?;
             require(total_idv < total_icv, LAssetError::LiquidateTooMuch)?;
@@ -498,7 +515,8 @@ mod finance2 {
             
             let total_debt = sub(total_liquidity, total_borrowable); //PROVED
             let total_bonds = self.total_bonds;
-            let to_repay = mulw(cash, total_bonds).div_rate(total_debt).unwrap_or(0); //PROVED           
+            let real_cash = mulw(cash, self.repay_haircut).scale();
+            let to_repay = mulw(real_cash, total_bonds).div_rate(total_debt).unwrap_or(0); //PROVED           
             let to_compensate = to_repay.saturating_sub(bonds);
             let to_burn = sub(to_repay, to_compensate); //PROVED
 
@@ -590,10 +608,13 @@ mod finance2 {
                 self.last_updated_at = updated_at;
                 
                 if let Some(c) = self.collateral.get(user) {
-                    let qouted_collateral = mulw(c, self.price).div(self.price_scaler).unwrap_or(u128::MAX);
-                    let icv = mulw(qouted_collateral, self.initial_haircut).scale();
-                    let mcv = mulw(qouted_collateral, self.maintenance_haircut).scale();
-                    Ok((self.next, 0, icv, 0, mcv, 0))
+                    if let Some(qouted_collateral) = mulw(c, self.price).div(self.price_scaler) {
+                        let icv = mulw(qouted_collateral, self.initial_haircut).scale();
+                        let mcv = mulw(qouted_collateral, self.maintenance_haircut).scale();
+                        Ok((self.next, 0, icv, 0, mcv, 0))
+                    } else {
+                        Ok((self.next, 0, u128::MAX, 0, u128::MAX, 0))
+                    }
                 } else if let Some(b) = self.bonds.get(user) {
                     let total_debt = sub(total_liquidity, total_borrowable); //TODO: prove it
                     let debt = mulw(b, total_debt).ceil_rate(self.total_bonds).unwrap_or(total_debt); //TODO: prove it
@@ -626,9 +647,12 @@ mod finance2 {
             self.last_updated_at = updated_at;
 
             if let Some(c) = self.collateral.get(user) {
-                let qouted_collateral = mulw(c, self.price).div(self.price_scaler).unwrap_or(u128::MAX);
-                let icv = mulw(qouted_collateral, self.initial_haircut).scale();
-                (self.next, icv, 0)
+                if let Some(qouted_collateral) = mulw(c, self.price).div(self.price_scaler) {
+                    let icv = mulw(qouted_collateral, self.initial_haircut).scale();
+                    (self.next, icv, 0)
+                } else {
+                    (self.next, u128::MAX, 0)
+                }
             } else if let Some(b) = self.bonds.get(user) {
                 let total_debt = sub(total_liquidity, total_borrowable); //PROVED
                 let debt = mulw(b, total_debt).ceil_rate(self.total_bonds).unwrap_or(total_debt); //PROVED
