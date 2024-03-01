@@ -14,7 +14,6 @@ pub enum LAssetError {
     CollateralValueTooLowAfterWithdraw,
     WithdrawGasTransferFailed,
 
-    MintLiquidityOverflow,
     MintOverflow,
     MintTransferFailed(PSP22Error),
 
