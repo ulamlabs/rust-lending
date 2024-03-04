@@ -16,12 +16,14 @@ pub enum LAssetError {
 
     MintOverflow,
     MintTransferFailed(PSP22Error),
+    MintFeeOverflow,
 
     BurnOverflow,
     BurnTooMuch,
     BurnTransferFailed(PSP22Error),
     
     BorrowOverflow,
+    BorrowFeeOverflow,
     FirstBorrowRequiresGasCollateral,
     BorrowTransferFailed(PSP22Error),
     CollateralValueTooLowAfterBorrow,
@@ -33,6 +35,9 @@ pub enum LAssetError {
     WithdrawCashTransferFailed(PSP22Error),
 
     LiquidateForNothing,
+    LiquidateTotalRepaidOverflow,
+    LiquidateRewardsOverflow,
+    LiquidateRepaidCollateralOverflow,
     LiquidateCollateralOverflow,
     LiquidateTooMuch,
     LiquidateTooEarly,
