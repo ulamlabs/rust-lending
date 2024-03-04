@@ -688,34 +688,38 @@ mod finance2 {
         fn transfer(&mut self, to: AccountId, value: u128, _data: Vec<u8>) -> Result<(), PSP22Error> {
             let from = self.env().caller();
             let from_shares = self.shares.get(from).unwrap_or(0);
-            let to_shares = self.shares.get(to).unwrap_or(0);
-
             let new_from_shares = from_shares.checked_sub(value).ok_or(PSP22Error::InsufficientBalance)?;
-            let new_to_shares = add(to_shares, value);
 
-            self.shares.insert(from, &new_from_shares);
-            self.shares.insert(to, &new_to_shares);
-
-            self.env().emit_event(Transfer {from: Some(from), to: Some(to), value});
+            if from != to {
+                let to_shares = self.shares.get(to).unwrap_or(0);
+                let new_to_shares = add(to_shares, value);
+                
+                self.shares.insert(from, &new_from_shares);
+                self.shares.insert(to, &new_to_shares);
+                
+                self.env().emit_event(Transfer {from: Some(from), to: Some(to), value});
+            }
             Ok(())
         }
 
         #[ink(message)]
         fn transfer_from(&mut self, from: AccountId, to: AccountId, value: u128, _data: Vec<u8>) -> Result<(), PSP22Error> {
             let from_shares = self.shares.get(from).unwrap_or(0);
-            let to_shares = self.shares.get(to).unwrap_or(0);
             let allowance = self.allowance.get((from, to)).unwrap_or(0);
-            
             let new_allowance = allowance.checked_sub(value).ok_or(PSP22Error::InsufficientAllowance)?;
             let new_from_shares = from_shares.checked_sub(value).ok_or(PSP22Error::InsufficientBalance)?;
-            let new_to_shares = add(to_shares, value);
+            
+            if from != to {
+                let to_shares = self.shares.get(to).unwrap_or(0);    
+                let new_to_shares = add(to_shares, value); //PROVED
 
-            self.shares.insert(from, &new_from_shares);
-            self.shares.insert(to, &new_to_shares);
-            self.allowance.insert((from, to), &new_allowance);
+                self.shares.insert(from, &new_from_shares);
+                self.shares.insert(to, &new_to_shares);
+                self.allowance.insert((from, to), &new_allowance);
 
-            self.env().emit_event(Approval {owner: from, spender: to, amount: new_allowance});
-            self.env().emit_event(Transfer {from: Some(from), to: Some(to), value});
+                self.env().emit_event(Approval {owner: from, spender: to, amount: new_allowance});
+                self.env().emit_event(Transfer {from: Some(from), to: Some(to), value});
+            }
             Ok(())
         }
 
@@ -808,6 +812,8 @@ mod finance2 {
     pub static mut L_USDC: Option<LAssetContract> = None;
     #[cfg(test)]
     pub static mut L_ETH: Option<LAssetContract> = None;
+    #[cfg(test)]
+    pub static mut BALANCES: Option<std::collections::HashMap<(AccountId, AccountId), u128>> = None;
 
     #[cfg(not(test))]
     fn update_next(next: &AccountId, user: &AccountId) -> (AccountId, u128, u128) {
@@ -860,7 +866,17 @@ mod finance2 {
     #[cfg(test)]
     #[allow(unused_variables)]
     fn transfer_from(token: AccountId, from: AccountId, to: AccountId, value: u128) -> Result<(), PSP22Error> {
-        Ok(())
+        unsafe {
+            let balances = BALANCES.as_mut().unwrap();
+            let balance = balances.get(&(token, from)).unwrap_or(&0);
+            let from_balance = balances.get(&(token, from)).unwrap_or(&0).checked_sub(value).ok_or(PSP22Error::InsufficientBalance)?;
+            if from != to {
+                let to_balance = balances.get(&(token, from)).unwrap_or(&0).saturating_add(value);
+                balances.insert((token, from), from_balance);
+                balances.insert((token, to), to_balance);
+            }
+            Ok(())
+        }
     }
 
     #[cfg(not(test))]
@@ -871,7 +887,13 @@ mod finance2 {
     #[cfg(test)]
     #[allow(unused_variables)]
     fn transfer(token: AccountId, to: AccountId, value: u128) -> Result<(), PSP22Error> {
-        Ok(())
+        unsafe {
+            let balances = BALANCES.as_mut().unwrap();
+            let balance = balances.get(&(token, to)).unwrap_or(&0);
+            let to_balance = balance.saturating_add(value);
+            balances.insert((token, to), to_balance);
+            Ok(())
+        }
     }
 }
 
