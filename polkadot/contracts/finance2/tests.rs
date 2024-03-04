@@ -1,4 +1,5 @@
 use ink::primitives::AccountId;
+use traits::psp22::PSP22Error;
 
 use crate::finance2::*;
 use crate::errors::LAssetError;
@@ -30,6 +31,8 @@ fn default_works() {
     let timestamp = 0;
 
     unsafe {
+        BALANCES = Some(std::collections::HashMap::new());
+
         setup_call(admin, l_btc, 0, 0);
         L_BTC = Some(LAssetContract::new(btc, l_usdc, 1));
         setup_call(admin, l_usdc, 0, 0);
@@ -37,8 +40,8 @@ fn default_works() {
         setup_call(admin, l_eth, 0, 0);
         L_ETH = Some(LAssetContract::new(eth, l_btc, 1));
     }
-    let (btc_app, usdc_app, eth_app) = unsafe {
-        (L_BTC.as_mut().unwrap(), L_USDC.as_mut().unwrap(), L_ETH.as_mut().unwrap())
+    let (balances, btc_app, usdc_app, eth_app) = unsafe {
+        (BALANCES.as_mut().unwrap(), L_BTC.as_mut().unwrap(), L_USDC.as_mut().unwrap(), L_ETH.as_mut().unwrap())
     };
 
     setup_call(alice, l_btc, 0, timestamp);
@@ -57,14 +60,22 @@ fn default_works() {
     }.unwrap();
     
     setup_call(alice, l_btc, 0, timestamp);
-    btc_app.deposit(u128::MAX).unwrap();
+    match btc_app.deposit(1) {
+        Err(LAssetError::DepositTransferFailed(PSP22Error::InsufficientBalance)) => Ok(()),
+        r => e("Deposit should fail if caller has insufficient balance", r),
+    }.unwrap();
 
+    balances.insert((btc, alice), u128::MAX);
+    setup_call(alice, l_btc, 0, timestamp);
+    btc_app.deposit(u128::MAX).unwrap();
+    
     setup_call(alice, l_btc, 0, timestamp);
     match btc_app.borrow(0) {
         Err(LAssetError::BorrowWhileDepositingNotAllowed) => Ok(()),
         r => e("Borrow while depositing should fail", r),
     }.unwrap();
     
+    balances.insert((btc, alice), 1);
     setup_call(alice, l_btc, 0, timestamp);
     match btc_app.deposit(1) {
         Err(LAssetError::DepositOverflow) => Ok(()),
@@ -95,6 +106,7 @@ fn default_works() {
     setup_call(alice, l_btc, 0, timestamp);
     btc_app.mint(1).unwrap();
 
+    balances.insert((btc, alice), u128::MAX);
     setup_call(alice, l_btc, 0, timestamp);
     match btc_app.mint(u128::MAX) {
         Err(LAssetError::MintOverflow) => Ok(()),
