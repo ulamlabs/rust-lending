@@ -65,8 +65,8 @@ mod finance2 {
         pub initial_haircut: u128,
         pub maintenance_haircut: u128,
 
-        pub burn_haircut: u128,
-        pub repay_haircut: u128,
+        pub mint_fee: u128,
+        pub borrow_fee: u128,
         pub liquidation_reward: u128,
 
         pub price: u128,
@@ -116,8 +116,8 @@ mod finance2 {
                 maintenance_margin: 0,
                 initial_haircut: u128::MAX,
                 maintenance_haircut: u128::MAX,
-                burn_haircut: u128::MAX,
-                repay_haircut: u128::MAX,
+                mint_fee: 0,
+                borrow_fee: 0,
                 liquidation_reward: 0,
                 price: 0,
                 price_scaler: 1,
@@ -140,8 +140,8 @@ mod finance2 {
             maintenance_margin: u128,
             initial_haircut: u128,
             maintenance_haircut: u128,
-            burn_haircut: u128,
-            repay_haircut: u128,
+            mint_fee: u128,
+            borrow_fee: u128,
             liquidation_reward: u128,
         ) -> Result<(), LAssetError> {
             let caller = self.env().caller();
@@ -155,8 +155,8 @@ mod finance2 {
             self.maintenance_margin = maintenance_margin;
             self.initial_haircut = initial_haircut;
             self.maintenance_haircut = maintenance_haircut;
-            self.burn_haircut = burn_haircut;
-            self.repay_haircut = repay_haircut;
+            self.mint_fee = mint_fee;
+            self.borrow_fee = borrow_fee;
             self.liquidation_reward = liquidation_reward;
 
             Ok(())
@@ -173,11 +173,6 @@ mod finance2 {
             Ok(())
         }
 
-        //There function does not require anything
-        //Depositing collateral is absolutely independent
-        //The only risk is that use will deposit small amount of tokens
-        //And it's going to be hard to liquidate such user
-        //We have to introduce some kind of gas collateral
         #[ink(message)]
         pub fn deposit(&mut self, to_deposit: u128) -> Result<(), LAssetError> {
             let caller = self.env().caller();
@@ -202,9 +197,6 @@ mod finance2 {
             Ok(())
         }
         
-        /// This function is very dangerous, because collateral is the only thing
-        /// That keep borrower from running away with bonds liquidity
-        /// It is crucial to check if collateral value is greater than value of bonds liquidity
         #[ink(message)]
         pub fn withdraw(&mut self, to_withdraw: u128) -> Result<(), LAssetError> {
             let caller = self.env().caller();
@@ -233,7 +225,7 @@ mod finance2 {
                 self.collateral.insert(caller, &new_collateral);
             } else {
                 self.collateral.remove(caller);
-                self.env().transfer(caller, self.gas_collateral).ok().ok_or(LAssetError::WithdrawGasTransferFailed)?; //TODO: map_err
+                self.env().transfer(caller, self.gas_collateral).ok().ok_or(LAssetError::WithdrawGasTransferFailed)?;
             }
 
             let mut total_icv = if let Some(qouted_collateral) = mulw(new_collateral, self.price).div(self.price_scaler) {
@@ -256,13 +248,13 @@ mod finance2 {
             transfer(self.underlying_token, caller, to_withdraw).map_err(LAssetError::WithdrawTransferFailed)
         }
 
-        /// Specify an amount of underlying tokens to deposit and receive pool shares.
-        /// Number of minted shares depends on total liquidity and total shares.
         #[ink(message)]
         pub fn mint(&mut self, to_wrap: u128) -> Result<(), LAssetError> {
             let caller = self.env().caller();
             let this = self.env().account_id();
-            transfer_from(self.underlying_token, caller, this, to_wrap).map_err(LAssetError::MintTransferFailed)?;
+            let extra_liquidity = mulw(to_wrap, self.mint_fee).scale_up().checked_add(to_wrap).ok_or(LAssetError::MintFeeOverflow)?;
+            
+            transfer_from(self.underlying_token, caller, this, extra_liquidity).map_err(LAssetError::MintTransferFailed)?;
 
             let total_borrowable = self.total_borrowable;
             let accruer = Accruer {
@@ -280,12 +272,12 @@ mod finance2 {
             let total_shares = self.total_shares;
             let shares = self.shares.get(caller).unwrap_or(0);
             
-            let new_total_liquidity = total_liquidity.checked_add(to_wrap).ok_or(LAssetError::MintOverflow)?;
+            let new_total_liquidity = total_liquidity.checked_add(extra_liquidity).ok_or(LAssetError::MintOverflow)?;
+            let new_total_borrowable = add(total_borrowable, extra_liquidity); //PROVED
             
-            let to_mint = mulw(to_wrap, total_shares).div_rate(total_liquidity).unwrap_or(to_wrap); //PROVED
+            let to_mint = mulw(to_wrap, total_shares).div_rate(total_liquidity).unwrap_or(extra_liquidity); //PROVED
             let new_total_shares = add(total_shares, to_mint); //PROVED
             let new_shares = add(shares, to_mint); //PROVED
-            let new_total_borrowable = add(total_borrowable, to_wrap); //PROVED
 
             self.total_shares = new_total_shares;
             self.shares.insert(caller, &new_shares);
@@ -298,7 +290,6 @@ mod finance2 {
             Ok(())
         }
 
-        /// Burn a specified amount of shares and receive the underlying tokens
         #[ink(message)]
         pub fn burn(&mut self, to_burn: u128) -> Result<(), LAssetError> {
             let caller = self.env().caller();
@@ -320,8 +311,7 @@ mod finance2 {
             let shares = self.shares.get(caller).unwrap_or(0);
 
             let new_shares = shares.checked_sub(to_burn).ok_or(LAssetError::BurnOverflow)?;
-            let real_total_liquidity = mulw(total_liquidity, self.burn_haircut).scale();
-            let to_withdraw = mulw(to_burn, real_total_liquidity).div_rate(total_shares).unwrap_or(0); //PROVED
+            let to_withdraw = mulw(to_burn, total_liquidity).div_rate(total_shares).unwrap_or(0); //PROVED
             let new_total_borrowable = total_borrowable.checked_sub(to_withdraw).ok_or(LAssetError::BurnTooMuch)?;
             let new_total_shares = sub(total_shares, to_burn); //PROVED
             let new_total_liquidity = sub(total_liquidity, to_withdraw); //PROVED
@@ -338,7 +328,6 @@ mod finance2 {
             transfer(self.underlying_token, caller, to_withdraw).map_err(LAssetError::BurnTransferFailed)
         }
 
-        //In this function amount is amount of liquidity, not shares
         #[ink(message)]
         pub fn borrow(&mut self, to_borrow: u128) -> Result<(), LAssetError> {
             let caller = self.env().caller();
@@ -357,8 +346,8 @@ mod finance2 {
             };
             let (total_liquidity, updated_at) = accruer.accrue();
 
-            let bonds = if let Some(bonds) = self.bonds.get(caller) {
-                Ok(bonds)
+            let bonds = if let Some(b) = self.bonds.get(caller) {
+                Ok(b)
             } else if self.collateral.contains(caller) {
                 Err(LAssetError::BorrowWhileDepositingNotAllowed)
             } else if self.env().transferred_value() != self.gas_collateral {
@@ -367,10 +356,11 @@ mod finance2 {
                 Ok(0)
             }?;
 
-            let new_total_borrowable = total_borrowable.checked_sub(to_borrow).ok_or(LAssetError::BorrowOverflow)?;
+            let to_repay = mulw(to_borrow, self.borrow_fee).scale_up().checked_add(to_borrow).ok_or(LAssetError::BorrowFeeOverflow)?;
+            let new_total_borrowable = total_borrowable.checked_sub(to_repay).ok_or(LAssetError::BorrowOverflow)?;
             let total_debt = sub(total_liquidity, total_borrowable); //PROVED
             let total_bonds = self.total_bonds;
-            let to_mint = mulw(to_borrow, total_bonds).ceil_rate(total_debt).unwrap_or(to_borrow); //PROVED
+            let to_mint = mulw(to_repay, total_bonds).ceil_rate(total_debt).unwrap_or(to_repay); //PROVED
             let new_total_bonds = add(total_bonds, to_mint); //PROVED
             let new_bonds = add(bonds, to_mint); //PROVED
             
@@ -440,7 +430,7 @@ mod finance2 {
                 let (next, repaid, icv, idv, mcv, mdv) = repay_or_update(current, user, caller)?;
                 
                 current = next;
-                total_repaid = repaid.saturating_add(repaid);
+                total_repaid = repaid.checked_add(repaid).ok_or(LAssetError::LiquidateTotalRepaidOverflow)?;
                 total_icv = total_icv.saturating_add(icv);
                 total_idv = total_idv.saturating_add(idv);
                 total_mcv = total_mcv.saturating_add(mcv);
@@ -462,8 +452,9 @@ mod finance2 {
 
             let price = self.price;
             let price_scaler = self.price_scaler;
-            let repaid_collateral = mulw(total_repaid, price_scaler).div(price).unwrap_or(u128::MAX);
-            let to_take = mulw(repaid_collateral, self.liquidation_reward).scale_up().saturating_add(repaid_collateral);
+            let repaid_collateral = mulw(total_repaid, price_scaler).div(price).ok_or(LAssetError::LiquidateRepaidCollateralOverflow)?;
+            let rewards = mulw(repaid_collateral, self.liquidation_reward).scale_up();
+            let to_take = repaid_collateral.checked_add(rewards).ok_or(LAssetError::LiquidateRewardsOverflow)?;
 
             let new_collateral = collateral.checked_sub(to_take).ok_or(LAssetError::LiquidateCollateralOverflow)?;
             let new_total_collateral = sub(self.total_collateral, to_take); //PROVED
@@ -476,7 +467,7 @@ mod finance2 {
                 self.collateral.insert(user, &new_collateral);
             } else {
                 self.collateral.remove(user);
-                self.env().transfer(caller, self.gas_collateral).ok().ok_or(LAssetError::LiquidateGasTransferFailed)?; //TODO: map_err
+                self.env().transfer(caller, self.gas_collateral).ok().ok_or(LAssetError::LiquidateGasTransferFailed)?;
             }
 
             total_icv = if let Some(qouted_collateral) = mulw(collateral, price).div(price_scaler) {
@@ -515,8 +506,7 @@ mod finance2 {
             
             let total_debt = sub(total_liquidity, total_borrowable); //PROVED
             let total_bonds = self.total_bonds;
-            let real_cash = mulw(cash, self.repay_haircut).scale();
-            let to_repay = mulw(real_cash, total_bonds).div_rate(total_debt).unwrap_or(0); //PROVED           
+            let to_repay = mulw(cash, total_bonds).div_rate(total_debt).unwrap_or(0); //PROVED           
             let to_compensate = to_repay.saturating_sub(bonds);
             let to_burn = sub(to_repay, to_compensate); //PROVED
 
@@ -616,8 +606,8 @@ mod finance2 {
                         Ok((self.next, 0, u128::MAX, 0, u128::MAX, 0))
                     }
                 } else if let Some(b) = self.bonds.get(user) {
-                    let total_debt = sub(total_liquidity, total_borrowable); //TODO: prove it
-                    let debt = mulw(b, total_debt).ceil_rate(self.total_bonds).unwrap_or(total_debt); //TODO: prove it
+                    let total_debt = sub(total_liquidity, total_borrowable); //PROVED
+                    let debt = mulw(b, total_debt).ceil_rate(self.total_bonds).unwrap_or(total_debt); //PROVED
                     let qouted_debt = mulw(debt, self.price).ceil_up(self.price_scaler).unwrap_or(u128::MAX);
                     let idv = mulw(qouted_debt, self.initial_margin).scale_up().saturating_add(qouted_debt);
                     let mdv = mulw(qouted_debt, self.maintenance_margin).scale_up().saturating_add(qouted_debt);
