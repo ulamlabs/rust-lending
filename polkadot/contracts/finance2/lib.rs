@@ -119,7 +119,7 @@ mod finance2 {
                 mint_fee: 0,
                 borrow_fee: 0,
                 liquidation_reward: 0,
-                price: 0,
+                price: 1,
                 price_scaler: 1,
                 cash: Mapping::new(),
                 whitelist: Mapping::new(),
@@ -814,6 +814,10 @@ mod finance2 {
     pub static mut L_ETH: Option<LAssetContract> = None;
     #[cfg(test)]
     pub static mut BALANCES: Option<std::collections::HashMap<(AccountId, AccountId), u128>> = None;
+    #[cfg(test)]
+    pub static mut CALLER: Option<AccountId> = None;
+    #[cfg(test)]
+    pub static mut CALLEE: Option<AccountId> = None;
 
     #[cfg(not(test))]
     fn update_next(next: &AccountId, user: &AccountId) -> (AccountId, u128, u128) {
@@ -822,19 +826,33 @@ mod finance2 {
     }
 
     #[cfg(test)]
-    fn update_next(next: &AccountId, user: &AccountId) -> (AccountId, u128, u128) {
+    fn get_next(next: &AccountId) -> &mut LAssetContract {
+        ink::env::test::set_caller::<ink::env::DefaultEnvironment>(unsafe { CALLEE.unwrap() });
+        ink::env::test::set_callee::<ink::env::DefaultEnvironment>(*next);
         unsafe {
-            if *next == AccountId::from([0x1; 32]) {
-                return L_BTC.as_mut().unwrap().update(*user);
-            }
-            if *next == AccountId::from([0x2; 32]) {
-                return L_USDC.as_mut().unwrap().update(*user);
-            }
             if *next == AccountId::from([0x3; 32]) {
-                return L_ETH.as_mut().unwrap().update(*user);
+                L_ETH.as_mut().unwrap()
             }
-            unreachable!();
+            else if *next == AccountId::from([0x2; 32]) {
+                L_USDC.as_mut().unwrap()
+            }
+            else {
+                L_BTC.as_mut().unwrap()
+            }
         }
+    }
+
+    #[cfg(test)]
+    fn restore_context() {
+        ink::env::test::set_caller::<ink::env::DefaultEnvironment>(unsafe { CALLER.unwrap() });
+        ink::env::test::set_callee::<ink::env::DefaultEnvironment>(unsafe { CALLEE.unwrap() });
+    }
+
+    #[cfg(test)]
+    fn update_next(next: &AccountId, user: &AccountId) -> (AccountId, u128, u128) {
+        let result = get_next(next).update(*user);
+        restore_context();
+        result
     }
 
     #[cfg(not(test))]
@@ -844,18 +862,9 @@ mod finance2 {
     }
     #[cfg(test)]
     fn repay_or_update(app: AccountId, user: AccountId, cash_owner: AccountId) -> Result<(AccountId, u128, u128, u128, u128, u128), LAssetError> {
-        unsafe {
-            if app == AccountId::from([0x1; 32]) {
-                return L_BTC.as_mut().unwrap().repay_or_update(user, cash_owner);
-            }
-            if app == AccountId::from([0x2; 32]) {
-                return L_USDC.as_mut().unwrap().repay_or_update(user, cash_owner);
-            }
-            if app == AccountId::from([0x3; 32]) {
-                return L_ETH.as_mut().unwrap().repay_or_update(user, cash_owner);
-            }
-            unreachable!();
-        }
+        let result = get_next(&app).repay_or_update(user, cash_owner);
+        restore_context();
+        result
     }
 
     #[cfg(not(test))]
@@ -866,17 +875,15 @@ mod finance2 {
     #[cfg(test)]
     #[allow(unused_variables)]
     fn transfer_from(token: AccountId, from: AccountId, to: AccountId, value: u128) -> Result<(), PSP22Error> {
-        unsafe {
-            let balances = BALANCES.as_mut().unwrap();
-            let balance = balances.get(&(token, from)).unwrap_or(&0);
-            let from_balance = balances.get(&(token, from)).unwrap_or(&0).checked_sub(value).ok_or(PSP22Error::InsufficientBalance)?;
-            if from != to {
-                let to_balance = balances.get(&(token, from)).unwrap_or(&0).saturating_add(value);
-                balances.insert((token, from), from_balance);
-                balances.insert((token, to), to_balance);
-            }
-            Ok(())
+        let balances = unsafe { BALANCES.as_mut().unwrap() };
+        let balance = balances.get(&(token, from)).unwrap_or(&0);
+        let from_balance = balances.get(&(token, from)).unwrap_or(&0).checked_sub(value).ok_or(PSP22Error::InsufficientBalance)?;
+        if from != to {
+            let to_balance = balances.get(&(token, from)).unwrap_or(&0).saturating_add(value);
+            balances.insert((token, from), from_balance);
+            balances.insert((token, to), to_balance);
         }
+        Ok(())
     }
 
     #[cfg(not(test))]
@@ -887,13 +894,11 @@ mod finance2 {
     #[cfg(test)]
     #[allow(unused_variables)]
     fn transfer(token: AccountId, to: AccountId, value: u128) -> Result<(), PSP22Error> {
-        unsafe {
-            let balances = BALANCES.as_mut().unwrap();
-            let balance = balances.get(&(token, to)).unwrap_or(&0);
-            let to_balance = balance.saturating_add(value);
-            balances.insert((token, to), to_balance);
-            Ok(())
-        }
+        let balances = unsafe { BALANCES.as_mut().unwrap() };
+        let balance = balances.get(&(token, to)).unwrap_or(&0);
+        let to_balance = balance.saturating_add(value);
+        balances.insert((token, to), to_balance);
+        Ok(())
     }
 }
 
