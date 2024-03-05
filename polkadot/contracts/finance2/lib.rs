@@ -205,29 +205,6 @@ mod finance2 {
             let new_collateral = collateral.checked_sub(to_withdraw).ok_or(LAssetError::WithdrawOverflow)?;
             let new_total_collateral = sub(self.total_collateral, to_withdraw); //PROVED
 
-            let accruer = Accruer {
-                now: self.env().block_timestamp(),
-                updated_at: self.last_updated_at,
-                total_liquidity: self.last_total_liquidity,
-                total_borrowable: self.total_borrowable,
-                standard_rate: self.standard_rate,
-                emergency_rate: self.emergency_rate,
-                standard_min_rate: self.standard_min_rate,
-                emergency_max_rate: self.emergency_max_rate,
-            };
-            let (total_liquidity, updated_at) = accruer.accrue();
-            
-            self.last_total_liquidity = total_liquidity;
-            self.last_updated_at = updated_at;
-            
-            self.total_collateral = new_total_collateral;
-            if new_collateral != 0 {
-                self.collateral.insert(caller, &new_collateral);
-            } else {
-                self.collateral.remove(caller);
-                self.env().transfer(caller, self.gas_collateral).ok().ok_or(LAssetError::WithdrawGasTransferFailed)?;
-            }
-
             let mut total_icv = if let Some(qouted_collateral) = mulw(new_collateral, self.price).div(self.price_scaler) {
                 mulw(qouted_collateral, self.initial_haircut).scale()
             } else {
@@ -244,6 +221,14 @@ mod finance2 {
                 total_idv = total_idv.saturating_add(idv);
             }
             require(total_idv == 0 || total_icv > total_idv, LAssetError::CollateralValueTooLowAfterWithdraw)?;
+
+            self.total_collateral = new_total_collateral;
+            if new_collateral != 0 {
+                self.collateral.insert(caller, &new_collateral);
+            } else {
+                self.collateral.remove(caller);
+                self.env().transfer(caller, self.gas_collateral).ok().ok_or(LAssetError::WithdrawGasTransferFailed)?;
+            }
 
             transfer(self.underlying_token, caller, to_withdraw).map_err(LAssetError::WithdrawTransferFailed)
         }
@@ -818,6 +803,8 @@ mod finance2 {
     pub static mut CALLER: Option<AccountId> = None;
     #[cfg(test)]
     pub static mut CALLEE: Option<AccountId> = None;
+    #[cfg(test)]
+    pub static mut TRANSFER_ERROR: bool = false;
 
     #[cfg(not(test))]
     fn update_next(next: &AccountId, user: &AccountId) -> (AccountId, u128, u128) {
@@ -894,6 +881,13 @@ mod finance2 {
     #[cfg(test)]
     #[allow(unused_variables)]
     fn transfer(token: AccountId, to: AccountId, value: u128) -> Result<(), PSP22Error> {
+        unsafe {
+            if TRANSFER_ERROR {
+                TRANSFER_ERROR = false;
+                return Err(PSP22Error::Custom("".to_string()));
+            }
+        }
+
         let balances = unsafe { BALANCES.as_mut().unwrap() };
         let balance = balances.get(&(token, to)).unwrap_or(&0);
         let to_balance = balance.saturating_add(value);
