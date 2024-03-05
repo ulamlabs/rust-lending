@@ -444,17 +444,6 @@ mod finance2 {
             let new_collateral = collateral.checked_sub(to_take).ok_or(LAssetError::LiquidateCollateralOverflow)?;
             let new_total_collateral = sub(self.total_collateral, to_take); //PROVED
 
-            self.last_total_liquidity = total_liquidity;
-            self.last_updated_at = updated_at;
-
-            self.total_collateral = new_total_collateral;
-            if new_collateral != 0 {
-                self.collateral.insert(user, &new_collateral);
-            } else {
-                self.collateral.remove(user);
-                self.env().transfer(caller, self.gas_collateral).ok().ok_or(LAssetError::LiquidateGasTransferFailed)?;
-            }
-
             total_icv = if let Some(qouted_collateral) = mulw(collateral, price).div(price_scaler) {
                 mulw(qouted_collateral, self.initial_haircut).scale().saturating_add(total_icv)
             } else {
@@ -468,6 +457,17 @@ mod finance2 {
 
             require(total_mdv < total_mcv, LAssetError::LiquidateTooEarly)?;
             require(total_idv < total_icv, LAssetError::LiquidateTooMuch)?;
+
+            self.last_total_liquidity = total_liquidity;
+            self.last_updated_at = updated_at;
+
+            self.total_collateral = new_total_collateral;
+            if new_collateral != 0 {
+                self.collateral.insert(user, &new_collateral);
+            } else {
+                self.collateral.remove(user);
+                self.env().transfer(caller, self.gas_collateral).ok().ok_or(LAssetError::LiquidateGasTransferFailed)?;
+            }
 
             transfer(self.underlying_token, caller, to_take).map_err(LAssetError::LiquidateTransferFailed)
         }
