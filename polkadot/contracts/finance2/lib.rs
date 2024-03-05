@@ -349,13 +349,6 @@ mod finance2 {
             let new_total_bonds = add(total_bonds, to_mint); //PROVED
             let new_bonds = add(bonds, to_mint); //PROVED
             
-            self.total_bonds = new_total_bonds;
-            self.bonds.insert(caller, &new_bonds);
-            
-            self.total_borrowable = new_total_borrowable;
-            self.last_total_liquidity = total_liquidity;
-            self.last_updated_at = updated_at;
-
             let new_total_debt = sub(total_liquidity, new_total_borrowable); //PROVED
             let debt = mulw(new_bonds, new_total_debt).ceil_rate(new_total_bonds).unwrap_or(new_total_debt); //PROVED
             let quoted_debt = mulw(debt, self.price).ceil_up(self.price_scaler).unwrap_or(u128::MAX);
@@ -370,6 +363,13 @@ mod finance2 {
                 total_idv = total_idv.saturating_add(idv);
             }
             require(total_icv > total_idv, LAssetError::CollateralValueTooLowAfterBorrow)?;
+
+            self.total_bonds = new_total_bonds;
+            self.bonds.insert(caller, &new_bonds);
+            
+            self.total_borrowable = new_total_borrowable;
+            self.last_total_liquidity = total_liquidity;
+            self.last_updated_at = updated_at;
 
             transfer(self.underlying_token, caller, to_borrow).map_err(LAssetError::BorrowTransferFailed)
         }
