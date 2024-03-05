@@ -56,8 +56,6 @@ pub enum LAssetError {
 
     SetParamsUnathorized,
 
-    TryCloseTransferFailed,
-
     #[cfg(test)]
     TestError(String),
 }
