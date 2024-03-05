@@ -878,6 +878,7 @@ mod finance2 {
         let mut token: ink::contract_ref!(PSP22) = token.into();
         token.transfer(to, value, Vec::default())
     }
+    
     #[cfg(test)]
     #[allow(unused_variables)]
     fn transfer(token: AccountId, to: AccountId, value: u128) -> Result<(), PSP22Error> {
