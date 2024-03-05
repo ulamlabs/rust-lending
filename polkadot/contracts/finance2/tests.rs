@@ -90,6 +90,13 @@ fn default_works() {
         r => e("Deposit should fail on overflow", r),
     }.unwrap();
 
+    unsafe { TRANSFER_ERROR = true; };
+    setup_call(alice, l_btc, 0, timestamp);
+    match btc_app.withdraw(0) {
+        Err(LAssetError::WithdrawTransferFailed(_)) => Ok(()),
+        r => e("Withdraw should fail if transfer fails", r),
+    }.unwrap();
+
     setup_call(alice, l_btc, 0, timestamp);
     btc_app.withdraw(u128::MAX).unwrap();
 
@@ -114,12 +121,21 @@ fn default_works() {
     setup_call(alice, l_btc, 0, timestamp);
     btc_app.mint(1).unwrap();
 
-    balances.insert((usdc, alice), 2);
+    balances.insert((usdc, alice), 3);
     setup_call(alice, l_usdc, 1, timestamp);
-    usdc_app.deposit(2).unwrap();
+    usdc_app.deposit(3).unwrap();
 
     setup_call(alice, l_btc, 1, timestamp);
-    btc_app.borrow(0).unwrap();
+    btc_app.borrow(1).unwrap();
+
+    setup_call(alice, l_usdc, 0, timestamp);
+    match usdc_app.withdraw(1) {
+        Err(LAssetError::CollateralValueTooLowAfterWithdraw) => Ok(()),
+        r => e("Withdraw should fail if collateral value too low", r),
+    }.unwrap(); 
+
+    setup_call(alice, l_usdc, 0, timestamp);
+    usdc_app.withdraw(0).unwrap();
     
     setup_call(alice, l_btc, 1, timestamp);
     match btc_app.deposit(1) {
