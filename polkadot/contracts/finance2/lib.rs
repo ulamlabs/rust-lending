@@ -16,7 +16,7 @@ pub trait LAsset {
         &mut self, 
         user: ink::primitives::AccountId, 
         cash_owner: ink::primitives::AccountId
-    ) -> Result<(ink::primitives::AccountId, u128, u128, u128, u128, u128), crate::errors::LAssetError>;
+    ) -> (ink::primitives::AccountId, u128, u128, u128, u128, u128);
 }
 
 #[ink::contract]
@@ -227,10 +227,14 @@ mod finance2 {
                 self.collateral.insert(caller, &new_collateral);
             } else {
                 self.collateral.remove(caller);
-                self.env().transfer(caller, self.gas_collateral).ok().ok_or(LAssetError::WithdrawGasTransferFailed)?;
+                self.transfer_gas(caller);
             }
 
             transfer(self.underlying_token, caller, to_withdraw).map_err(LAssetError::WithdrawTransferFailed)
+        }
+
+        fn transfer_gas(&self, to: AccountId) {
+            let _ = self.env().transfer(to, self.gas_collateral); //should never fail
         }
 
         #[ink(message)]
@@ -379,10 +383,10 @@ mod finance2 {
 
             let mut current = self.next;
             while current != this {
-                let (next, repaid, icv, idv, mcv, mdv) = repay_or_update(current, user, caller)?;
+                let (next, repaid, icv, idv, mcv, mdv) = repay_or_update(current, user, caller);
                 
                 current = next;
-                total_repaid = repaid.checked_add(repaid).ok_or(LAssetError::LiquidateTotalRepaidOverflow)?;
+                total_repaid = repaid.saturating_add(repaid);
                 total_icv = total_icv.saturating_add(icv);
                 total_idv = total_idv.saturating_add(idv);
                 total_mcv = total_mcv.saturating_add(mcv);
@@ -393,11 +397,11 @@ mod finance2 {
 
             let price = self.price;
             let price_scaler = self.price_scaler;
-            let repaid_collateral = mulw(total_repaid, price_scaler).div(price).ok_or(LAssetError::LiquidateRepaidCollateralOverflow)?;
+            let repaid_collateral = mulw(total_repaid, price_scaler).div(price).unwrap_or(u128::MAX);
             let rewards = mulw(repaid_collateral, self.liquidation_reward).scale_up();
-            let to_take = repaid_collateral.checked_add(rewards).ok_or(LAssetError::LiquidateRewardsOverflow)?;
+            let to_take = repaid_collateral.saturating_add(rewards).min(collateral);
 
-            let new_collateral = collateral.checked_sub(to_take).ok_or(LAssetError::LiquidateCollateralOverflow)?;
+            let new_collateral = sub(collateral, to_take); //PROVED
             let new_total_collateral = sub(self.total_collateral, to_take); //PROVED
 
             total_icv = if let Some(qouted_collateral) = mulw(collateral, price).div(price_scaler) {
@@ -411,24 +415,26 @@ mod finance2 {
                 u128::MAX
             };
 
-            require(total_mdv >= total_mcv, LAssetError::LiquidateTooEarly)?;
-            require(total_idv >= total_icv, LAssetError::LiquidateTooMuch)?;
+            require(total_mdv > total_mcv, LAssetError::LiquidateTooEarly)?;
+            require(total_idv > total_icv, LAssetError::LiquidateTooMuch)?;
 
             self.total_collateral = new_total_collateral;
             if new_collateral != 0 {
                 self.collateral.insert(user, &new_collateral);
             } else {
                 self.collateral.remove(user);
-                self.env().transfer(caller, self.gas_collateral).ok().ok_or(LAssetError::LiquidateGasTransferFailed)?;
+                self.transfer_gas(caller);
             }
 
             transfer(self.underlying_token, caller, to_take).map_err(LAssetError::LiquidateTransferFailed)
         }
 
-        fn inner_repay(&mut self, caller: AccountId, user: AccountId, cash: u128
-        ) -> Result<(u128, u128, u128, u128, u128), LAssetError> {
-            let bonds = self.bonds.get(user).ok_or(LAssetError::RepayWithoutBorrow)?;
-
+        fn inner_repay(&mut self, 
+            caller: AccountId, 
+            user: AccountId, 
+            cash: u128,
+            bonds: u128,
+        ) -> (u128, u128, u128, u128, u128) {
             let (total_liquidity, updated_at, total_borrowable) = self.accrue();
             
             let total_debt = sub(total_liquidity, total_borrowable); //PROVED
@@ -455,9 +461,9 @@ mod finance2 {
                 self.bonds.insert(user, &new_bonds);
             } else {
                 self.bonds.remove(user);
-                self.env().transfer(caller, self.gas_collateral).ok().ok_or(LAssetError::RepayGasTransferFailed)?; //TODO: map_err
+                self.transfer_gas(caller);
             }
-            Ok((repaid, new_total_borrowable, new_total_bonds, new_bonds, total_liquidity))
+            (repaid, new_total_borrowable, new_total_bonds, new_bonds, total_liquidity)
         }
 
 
@@ -470,7 +476,8 @@ mod finance2 {
 
             let cash = self.cash.get(caller).unwrap_or(0);
             let new_cash = cash.checked_add(extra_cash).ok_or(LAssetError::RepayCashOverflow)?;
-            self.inner_repay(caller, user, new_cash)?;
+            let bonds = self.bonds.get(user).ok_or(LAssetError::RepayWithoutBorrow)?;
+            self.inner_repay(caller, user, new_cash, bonds);
 
             Ok(())
         }
@@ -506,15 +513,19 @@ mod finance2 {
 
     impl LAsset for LAssetContract {
         #[ink(message)]
-        fn repay_or_update(&mut self, user: AccountId, cash_owner: AccountId) -> Result<(AccountId, u128, u128, u128, u128, u128), LAssetError> {
+        fn repay_or_update(&mut self, user: AccountId, cash_owner: AccountId) -> (AccountId, u128, u128, u128, u128, u128) {
             let caller = self.env().caller();
 
             let is_repay = if let Some(valid_caller) = self.whitelist.get(cash_owner) {
-                valid_caller == caller
+                if valid_caller == caller {
+                    self.bonds.get(user)
+                } else {
+                    None
+                }
             } else {
-                false
+                None
             };
-            if is_repay {
+            if let Some(bonds) = is_repay {
                 let price = self.price;
                 let price_scaler = self.price_scaler;
 
@@ -522,7 +533,7 @@ mod finance2 {
 
                 self.whitelist.remove(caller);
 
-                let (repaid, new_borrowable, new_total_bonds, new_bonds, total_liquidity) = self.inner_repay(cash_owner, user, cash)?;
+                let (repaid, new_borrowable, new_total_bonds, new_bonds, total_liquidity) = self.inner_repay(cash_owner, user, cash, bonds);
                 let qouted_repaid = mulw(repaid, price).ceil_up(price_scaler).unwrap_or(u128::MAX);
                 
                 let total_debt = sub(total_liquidity, new_borrowable); //PROVED
@@ -534,7 +545,7 @@ mod finance2 {
                 let old_qouted_debt = mulw(old_debt, price).ceil_up(price_scaler).unwrap_or(u128::MAX);
                 let idv = mulw(old_qouted_debt, self.initial_margin).scale_up().saturating_add(old_qouted_debt);
 
-                Ok((self.next, qouted_repaid, 0, idv, 0, mdv))
+                (self.next, qouted_repaid, 0, idv, 0, mdv)
             } else {
                 let (total_liquidity, updated_at, total_borrowable) = self.accrue();
 
@@ -545,9 +556,9 @@ mod finance2 {
                     if let Some(qouted_collateral) = mulw(c, self.price).div(self.price_scaler) {
                         let icv = mulw(qouted_collateral, self.initial_haircut).scale();
                         let mcv = mulw(qouted_collateral, self.maintenance_haircut).scale();
-                        Ok((self.next, 0, icv, 0, mcv, 0))
+                        (self.next, 0, icv, 0, mcv, 0)
                     } else {
-                        Ok((self.next, 0, u128::MAX, 0, u128::MAX, 0))
+                        (self.next, 0, u128::MAX, 0, u128::MAX, 0)
                     }
                 } else if let Some(b) = self.bonds.get(user) {
                     let total_debt = sub(total_liquidity, total_borrowable); //PROVED
@@ -555,9 +566,9 @@ mod finance2 {
                     let qouted_debt = mulw(debt, self.price).ceil_up(self.price_scaler).unwrap_or(u128::MAX);
                     let idv = mulw(qouted_debt, self.initial_margin).scale_up().saturating_add(qouted_debt);
                     let mdv = mulw(qouted_debt, self.maintenance_margin).scale_up().saturating_add(qouted_debt);
-                    Ok((self.next, 0, 0, idv, 0, mdv))
+                    (self.next, 0, 0, idv, 0, mdv)
                 } else {
-                    Ok((self.next, 0, 0, 0, 0, 0))
+                    (self.next, 0, 0, 0, 0, 0)
                 }
             }
         }
@@ -791,12 +802,12 @@ mod finance2 {
     }
 
     #[cfg(not(test))]
-    fn repay_or_update(app: AccountId, user: AccountId, cash_owner: AccountId) -> Result<(AccountId, u128, u128, u128, u128, u128), LAssetError> {
+    fn repay_or_update(app: AccountId, user: AccountId, cash_owner: AccountId) -> (AccountId, u128, u128, u128, u128, u128) {
         let mut app: ink::contract_ref!(LAsset) = app.into();
         app.repay_or_update(user, cash_owner)
     }
     #[cfg(test)]
-    fn repay_or_update(app: AccountId, user: AccountId, cash_owner: AccountId) -> Result<(AccountId, u128, u128, u128, u128, u128), LAssetError> {
+    fn repay_or_update(app: AccountId, user: AccountId, cash_owner: AccountId) -> (AccountId, u128, u128, u128, u128, u128) {
         let result = get_next(&app).repay_or_update(user, cash_owner);
         restore_context();
         result

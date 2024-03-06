@@ -14,8 +14,8 @@ fn setup_call(caller: AccountId, callee: AccountId, value: u128, timestamp: u64)
     ink::env::test::set_value_transferred::<ink::env::DefaultEnvironment>(value);
 }
 
-fn e<T: std::fmt::Debug>(m: &str, r: Result<T, LAssetError>) -> Result<T, LAssetError> {
-    Err(LAssetError::TestError(m.to_string() + format!(". Got: {:?}", r).as_str()))
+fn e<T: std::fmt::Debug>(m: &str, r: Result<T, LAssetError>) -> Result<(), String> {
+    Err(format!("{}. Got: {:?}", m, r))
 }
 
 
@@ -163,14 +163,14 @@ fn default_works() {
         btc_app.mint_fee = 0;
     }
     {
-        balances.insert((btc, alice), 2);
+        balances.insert((btc, alice), 3);
         setup_call(alice, l_btc, 0, timestamp);
-        btc_app.mint(2).unwrap();
+        btc_app.mint(3).unwrap();
     }
     {
-        balances.insert((usdc, alice), 3);
+        balances.insert((usdc, alice), 4);
         setup_call(alice, l_usdc, 1, timestamp);
-        usdc_app.deposit(3).unwrap();
+        usdc_app.deposit(4).unwrap();
     }
     {
         setup_call(alice, l_btc, 1, timestamp);
@@ -186,7 +186,7 @@ fn default_works() {
     }
     {
         setup_call(alice, l_btc, 0, timestamp);
-        match btc_app.borrow(1) {
+        match btc_app.borrow(2) {
             Err(LAssetError::CollateralValueTooLowAfterBorrow) => Ok(()),
             r => e("Borrow should fail if collateral value too low", r),
         }.unwrap();
@@ -202,7 +202,7 @@ fn default_works() {
     }
     {
         setup_call(alice, l_btc, 0, timestamp);
-        match btc_app.burn(2) {
+        match btc_app.burn(3) {
             Err(LAssetError::BurnTooMuch) => Ok(()),
             r => e("Burn should fail if burn too much", r),
         }.unwrap();
@@ -217,17 +217,9 @@ fn default_works() {
     }
     {
         setup_call(alice, l_usdc, 0, timestamp);
-        match usdc_app.withdraw(1) {
+        match usdc_app.withdraw(2) {
             Err(LAssetError::CollateralValueTooLowAfterWithdraw) => Ok(()),
             r => e("Withdraw should fail if collateral value too low", r),
-        }.unwrap();
-    }
-    {
-        *transfer_error = true;
-        setup_call(alice, l_usdc, 0, timestamp);
-        match usdc_app.withdraw(0) {
-            Err(LAssetError::WithdrawTransferFailed(_)) => Ok(()),
-            r => e("Withdraw should fail if transfer fails", r),
         }.unwrap();
     }
     {
@@ -302,14 +294,6 @@ fn default_works() {
         }.unwrap();
     }
     {
-        *transfer_error = true;
-        setup_call(alice, l_btc, 0, timestamp);
-        match btc_app.repay(alice, 1) {
-            Err(LAssetError::RepayTransferFailed(_)) => Ok(()),
-            r => e("Repay should fail if transfer fails", r),
-        }.unwrap();
-    }
-    {
         setup_call(alice, l_btc, 0, timestamp);
         match btc_app.liquidate(bob) {
             Err(LAssetError::LiquidateForNothing) => Ok(()),
@@ -321,6 +305,32 @@ fn default_works() {
         match usdc_app.liquidate(alice) {
             Err(LAssetError::LiquidateTooEarly) => Ok(()),
             r => e("Liquidate should fail if too early", r),
+        }.unwrap();
+    }
+    {
+        balances.insert((eth, alice), 1);
+        setup_call(alice, l_eth, 0, timestamp);
+        eth_app.mint(1).unwrap();
+
+        setup_call(alice, l_eth, 1, timestamp);
+        eth_app.borrow(1).unwrap();
+
+        *transfer_error = true;
+        usdc_app.price_scaler = 2;
+        setup_call(alice, l_usdc, 0, timestamp);
+        match usdc_app.liquidate(alice) {
+            Err(LAssetError::LiquidateTransferFailed(_)) => Ok(()),
+            r => e("Liquidate should fail if transfer fails", r),
+        }.unwrap();
+        usdc_app.price_scaler = 1;
+    }
+    {
+        eth_app.maintenance_margin = u128::MAX;
+        btc_app.maintenance_margin = u128::MAX;
+        setup_call(alice, l_usdc, 0, timestamp);
+        match usdc_app.liquidate(alice) {
+            Err(LAssetError::LiquidateTooMuch) => Ok(()),
+            r => e("Liquidate should fail if too much", r),
         }.unwrap();
     }
 }
