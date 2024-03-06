@@ -23,6 +23,7 @@ pub trait LAsset {
 mod finance2 {
     use ink::prelude::vec::Vec;
     use ink::prelude::string::String;
+    use ink::prelude::string::ToString;
     use traits::errors::FlashLoanPoolError;
     use traits::psp22::{PSP22, PSP22Error, PSP22Metadata, Transfer, Approval};
     use traits::FlashLoanPool;
@@ -750,25 +751,22 @@ mod finance2 {
     } 
 
     #[cfg(not(test))]
-    /// If the asset is not compatible with PSP22Metadata, the decimals will be set to 6
     fn fetch_psp22_metadata(token: AccountId) -> (Option<String>, Option<String>, u8) {
         const DEFAULT_DECIMALS: u8 = 6;
         use ink::codegen::TraitCallBuilder;
         let token: ink::contract_ref!(PSP22Metadata) = token.into();
-        let name = token.call().token_name().transferred_value(0).try_invoke().unwrap_or(Ok(None)).unwrap_or(None);
-        let symbol = token.call().token_symbol().transferred_value(0).try_invoke().unwrap_or(Ok(None)).unwrap_or(None);
-        let decimals = token.call().token_decimals().transferred_value(0).try_invoke().unwrap_or(Ok(DEFAULT_DECIMALS)).unwrap_or(DEFAULT_DECIMALS);
-
-        let l_name = name.map(|n| {
-            let mut name = String::from("L-");
-            name.push_str(n.as_str());
-            name
-        });
-        let l_symbol = symbol.map(|s| {
-            let mut symbol = String::from("L-");
-            symbol.push_str(s.as_str());
-            symbol
-        });
+        let l_name = match token.call().token_name().try_invoke() {
+            Ok(Ok(Some(name))) => Some("L-".to_string() + name.as_str()),
+            _ => None,
+        };
+        let l_symbol = match token.call().token_symbol().try_invoke() {
+            Ok(Ok(Some(symbol))) => Some("L-".to_string() + symbol.as_str()),
+            _ => None,
+        };
+        let decimals = match token.call().token_decimals().try_invoke() {
+            Ok(Ok(decimals)) => decimals,
+            _ => DEFAULT_DECIMALS,
+        };
 
         (l_name, l_symbol, decimals)
     }
