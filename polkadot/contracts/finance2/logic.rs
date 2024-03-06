@@ -62,38 +62,3 @@ impl Wide {
         add(self.scale(), c)
     }
 }
-pub struct Accruer {
-    pub now: u64,
-    pub updated_at: u64,
-    pub total_liquidity: u128,
-    pub total_borrowable: u128,
-    pub standard_rate: u128,
-    pub emergency_rate: u128,
-    pub standard_min_rate: u128,
-    pub emergency_max_rate: u128,
-}
-impl Accruer {
-    pub fn accrue(self) -> (u128, u64) {
-        if self.now > self.updated_at {
-            let delta = sub(self.now as u128, self.updated_at as u128);
-            let standard_matured = self.standard_rate.saturating_mul(delta);
-            let emergency_matured = self.emergency_rate.saturating_mul(delta);
-
-            let debt = sub(self.total_liquidity, self.total_borrowable);
-
-            let standard_scaled = mulw(standard_matured, debt).div_rate(self.total_liquidity).unwrap_or(0);
-            let emergency_scaled = mulw(emergency_matured, self.total_borrowable).div_rate(self.total_liquidity).unwrap_or(0);
-
-            let standard_final = standard_scaled.saturating_add(self.standard_min_rate);
-            let emergency_final = self.emergency_max_rate.saturating_sub(emergency_scaled);
-
-            let interest_rate = standard_final.max(emergency_final);
-            let interest = mulw(debt, interest_rate).scale_up();
-
-            let new_total_liquidity = self.total_liquidity.saturating_add(interest);
-            (new_total_liquidity, self.now)    
-        } else {
-            (self.total_liquidity, self.updated_at)
-        }
-    }
-}
