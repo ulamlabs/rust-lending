@@ -44,11 +44,8 @@ pub enum LAssetError {
     LiquidateTransferFailed(PSP22Error),
     LiquidateGasTransferFailed,
 
-    RepayOverflow,
     RepayWithoutBorrow,
     RepayTransferFailed(PSP22Error),
-    RepayInsufficientCash,
-    RepayInsufficientInternalCash,
     RepayCashOverflow,
     RepayGasTransferFailed,
 

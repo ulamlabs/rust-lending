@@ -26,7 +26,7 @@ mod finance2 {
     use traits::errors::FlashLoanPoolError;
     use traits::psp22::{PSP22, PSP22Error, PSP22Metadata, Transfer, Approval};
     use traits::FlashLoanPool;
-    use crate::logic::{require, add, mulw, sub, Accruer};
+    use crate::logic::{require, add, mulw, sub};
     use crate::errors::LAssetError;
 
     use ink::storage::Mapping;
@@ -241,18 +241,7 @@ mod finance2 {
             
             transfer_from(self.underlying_token, caller, this, extra_liquidity).map_err(LAssetError::MintTransferFailed)?;
 
-            let total_borrowable = self.total_borrowable;
-            let accruer = Accruer {
-                now: self.env().block_timestamp(),
-                updated_at: self.last_updated_at,
-                total_liquidity: self.last_total_liquidity,
-                total_borrowable,
-                standard_rate: self.standard_rate,
-                emergency_rate: self.emergency_rate,
-                standard_min_rate: self.standard_min_rate,
-                emergency_max_rate: self.emergency_max_rate,
-            };
-            let (total_liquidity, updated_at) = accruer.accrue();
+            let (total_liquidity, updated_at, total_borrowable) = self.accrue();
 
             let total_shares = self.total_shares;
             let shares = self.shares.get(caller).unwrap_or(0);
@@ -279,18 +268,7 @@ mod finance2 {
         pub fn burn(&mut self, to_burn: u128) -> Result<(), LAssetError> {
             let caller = self.env().caller();
 
-            let total_borrowable = self.total_borrowable;
-            let accruer = Accruer {
-                now: self.env().block_timestamp(),
-                updated_at: self.last_updated_at,
-                total_liquidity: self.last_total_liquidity,
-                total_borrowable,
-                standard_rate: self.standard_rate,
-                emergency_rate: self.emergency_rate,
-                standard_min_rate: self.standard_min_rate,
-                emergency_max_rate: self.emergency_max_rate,
-            };
-            let (total_liquidity, updated_at) = accruer.accrue();
+            let (total_liquidity, updated_at, total_borrowable) = self.accrue();
 
             let total_shares = self.total_shares;
             let shares = self.shares.get(caller).unwrap_or(0);
@@ -318,18 +296,7 @@ mod finance2 {
             let caller = self.env().caller();
             let this = self.env().account_id();
 
-            let total_borrowable = self.total_borrowable;
-            let accruer = Accruer {
-                now: self.env().block_timestamp(),
-                updated_at: self.last_updated_at,
-                total_liquidity: self.last_total_liquidity,
-                total_borrowable,
-                standard_rate: self.standard_rate,
-                emergency_rate: self.emergency_rate,
-                standard_min_rate: self.standard_min_rate,
-                emergency_max_rate: self.emergency_max_rate,
-            };
-            let (total_liquidity, updated_at) = accruer.accrue();
+            let (total_liquidity, updated_at, total_borrowable) = self.accrue();
 
             let bonds = if let Some(b) = self.bonds.get(caller) {
                 Ok(b)
@@ -422,17 +389,6 @@ mod finance2 {
                 total_mdv = total_mdv.saturating_add(mdv);
             }
 
-            let accruer = Accruer {
-                now: self.env().block_timestamp(),
-                updated_at: self.last_updated_at,
-                total_liquidity: self.last_total_liquidity,
-                total_borrowable: self.total_borrowable,
-                standard_rate: self.standard_rate,
-                emergency_rate: self.emergency_rate,
-                standard_min_rate: self.standard_min_rate,
-                emergency_max_rate: self.emergency_max_rate,
-            };
-            let (total_liquidity, updated_at) = accruer.accrue();
             let collateral = self.collateral.get(user).ok_or(LAssetError::LiquidateForNothing)?;
 
             let price = self.price;
@@ -455,11 +411,8 @@ mod finance2 {
                 u128::MAX
             };
 
-            require(total_mdv < total_mcv, LAssetError::LiquidateTooEarly)?;
-            require(total_idv < total_icv, LAssetError::LiquidateTooMuch)?;
-
-            self.last_total_liquidity = total_liquidity;
-            self.last_updated_at = updated_at;
+            require(total_mdv >= total_mcv, LAssetError::LiquidateTooEarly)?;
+            require(total_idv >= total_icv, LAssetError::LiquidateTooMuch)?;
 
             self.total_collateral = new_total_collateral;
             if new_collateral != 0 {
@@ -475,19 +428,8 @@ mod finance2 {
         fn inner_repay(&mut self, caller: AccountId, user: AccountId, cash: u128
         ) -> Result<(u128, u128, u128, u128, u128), LAssetError> {
             let bonds = self.bonds.get(user).ok_or(LAssetError::RepayWithoutBorrow)?;
-            let total_borrowable = self.total_borrowable;
 
-            let accruer = Accruer {
-                now: self.env().block_timestamp(),
-                updated_at: self.last_updated_at,
-                total_liquidity: self.last_total_liquidity,
-                total_borrowable,
-                standard_rate: self.standard_rate,
-                emergency_rate: self.emergency_rate,
-                standard_min_rate: self.standard_min_rate,
-                emergency_max_rate: self.emergency_max_rate,
-            };
-            let (total_liquidity, updated_at) = accruer.accrue();
+            let (total_liquidity, updated_at, total_borrowable) = self.accrue();
             
             let total_debt = sub(total_liquidity, total_borrowable); //PROVED
             let total_bonds = self.total_bonds;
@@ -532,6 +474,34 @@ mod finance2 {
 
             Ok(())
         }
+
+        pub fn accrue(&self) -> (u128, u64, u128) {
+            let now = self.env().block_timestamp();
+            let updated_at = self.last_updated_at;
+            let total_liquidity = self.last_total_liquidity;
+            let total_borrowable = self.total_borrowable;
+            if now > updated_at {
+                let delta = sub(now as u128, updated_at as u128);
+                let standard_matured = self.standard_rate.saturating_mul(delta);
+                let emergency_matured = self.emergency_rate.saturating_mul(delta);
+    
+                let debt = sub(total_liquidity, total_borrowable);
+    
+                let standard_scaled = mulw(standard_matured, debt).div_rate(total_liquidity).unwrap_or(0);
+                let emergency_scaled = mulw(emergency_matured, total_borrowable).div_rate(total_liquidity).unwrap_or(0);
+    
+                let standard_final = standard_scaled.saturating_add(self.standard_min_rate);
+                let emergency_final = self.emergency_max_rate.saturating_sub(emergency_scaled);
+    
+                let interest_rate = standard_final.max(emergency_final);
+                let interest = mulw(debt, interest_rate).scale_up();
+    
+                let new_total_liquidity = total_liquidity.saturating_add(interest);
+                (new_total_liquidity, now, total_borrowable)    
+            } else {
+                (total_liquidity, updated_at, total_borrowable)
+            }
+        }
     }
 
     impl LAsset for LAssetContract {
@@ -566,18 +536,7 @@ mod finance2 {
 
                 Ok((self.next, qouted_repaid, 0, idv, 0, mdv))
             } else {
-                let total_borrowable = self.total_borrowable;
-                let accurer = Accruer {
-                    now: self.last_updated_at,
-                    updated_at: self.last_updated_at,
-                    total_liquidity: self.last_total_liquidity,
-                    total_borrowable,
-                    standard_rate: self.standard_rate,
-                    emergency_rate: self.emergency_rate,
-                    standard_min_rate: self.standard_min_rate,
-                    emergency_max_rate: self.emergency_max_rate,
-                };
-                let (total_liquidity, updated_at) = accurer.accrue();
+                let (total_liquidity, updated_at, total_borrowable) = self.accrue();
 
                 self.last_total_liquidity = total_liquidity;
                 self.last_updated_at = updated_at;
@@ -605,18 +564,7 @@ mod finance2 {
 
         #[ink(message)]
         fn update(&mut self, user: AccountId) -> (AccountId, u128, u128) {
-            let total_borrowable = self.total_borrowable;
-            let accruer = Accruer {
-                now: self.env().block_timestamp(),
-                updated_at: self.last_updated_at,
-                total_liquidity: self.last_total_liquidity,
-                total_borrowable,
-                standard_rate: self.standard_rate,
-                emergency_rate: self.emergency_rate,
-                standard_min_rate: self.standard_min_rate,
-                emergency_max_rate: self.emergency_max_rate,
-            };
-            let (total_liquidity, updated_at) = accruer.accrue();
+            let (total_liquidity, updated_at, total_borrowable) = self.accrue();
 
             self.last_total_liquidity = total_liquidity;
             self.last_updated_at = updated_at;

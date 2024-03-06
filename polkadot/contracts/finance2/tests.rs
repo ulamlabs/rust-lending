@@ -48,9 +48,30 @@ fn default_works() {
     };
     {
         setup_call(alice, l_btc, 0, timestamp);
+        match btc_app.set_price(0, 0) {
+            Err(LAssetError::SetPriceUnathorized) => Ok(()),
+            r => e("Set price should fail if unauthorized", r),
+        }.unwrap();
+    }
+    {
+        setup_call(alice, l_eth, 0, timestamp);
+        match eth_app.set_params(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0) {
+            Err(LAssetError::SetParamsUnathorized) => Ok(()),
+            r => e("Set params should fail if unauthorized", r),
+        }.unwrap();
+    }
+    {
+        setup_call(alice, l_btc, 0, timestamp);
         match btc_app.deposit(0) {
             Err(LAssetError::FirstDepositRequiresGasCollateral) => Ok(()),
             r => e("First deposit should fail without gas collateral", r),
+        }.unwrap();
+    }
+    {
+        setup_call(alice, l_btc, 0, timestamp);
+        match btc_app.repay(alice, 0) {
+            Err(LAssetError::RepayWithoutBorrow) => Ok(()),
+            r => e("Repay without borrow should fail", r),
         }.unwrap();
     }
     {
@@ -278,6 +299,28 @@ fn default_works() {
         match btc_app.repay(alice, 1) {
             Err(LAssetError::RepayCashOverflow) => Ok(()),
             r => e("Repay cash should fail on overflow", r),
+        }.unwrap();
+    }
+    {
+        *transfer_error = true;
+        setup_call(alice, l_btc, 0, timestamp);
+        match btc_app.repay(alice, 1) {
+            Err(LAssetError::RepayTransferFailed(_)) => Ok(()),
+            r => e("Repay should fail if transfer fails", r),
+        }.unwrap();
+    }
+    {
+        setup_call(alice, l_btc, 0, timestamp);
+        match btc_app.liquidate(bob) {
+            Err(LAssetError::LiquidateForNothing) => Ok(()),
+            r => e("Liquidate should fail if nothing to liquidate", r),
+        }.unwrap();
+    }
+    {
+        setup_call(alice, l_usdc, 0, timestamp);
+        match usdc_app.liquidate(alice) {
+            Err(LAssetError::LiquidateTooEarly) => Ok(()),
+            r => e("Liquidate should fail if too early", r),
         }.unwrap();
     }
 }
