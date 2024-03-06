@@ -12,7 +12,6 @@ pub enum LAssetError {
     WithdrawTransferFailed(PSP22Error),
     WithdrawWithoutDeposit,
     CollateralValueTooLowAfterWithdraw,
-    WithdrawGasTransferFailed,
 
     MintOverflow,
     MintTransferFailed(PSP22Error),
@@ -35,24 +34,15 @@ pub enum LAssetError {
     WithdrawCashTransferFailed(PSP22Error),
 
     LiquidateForNothing,
-    LiquidateTotalRepaidOverflow,
-    LiquidateRewardsOverflow,
-    LiquidateRepaidCollateralOverflow,
-    LiquidateCollateralOverflow,
     LiquidateTooMuch,
     LiquidateTooEarly,
     LiquidateTransferFailed(PSP22Error),
-    LiquidateGasTransferFailed,
 
     RepayWithoutBorrow,
     RepayTransferFailed(PSP22Error),
     RepayCashOverflow,
-    RepayGasTransferFailed,
 
     SetPriceUnathorized,
 
     SetParamsUnathorized,
-
-    #[cfg(test)]
-    TestError(String),
 }
