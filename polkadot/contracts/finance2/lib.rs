@@ -67,6 +67,7 @@ mod finance2 {
 
         pub mint_fee: u128,
         pub borrow_fee: u128,
+        pub take_cash_fee: u128,
         pub liquidation_reward: u128,
 
         pub price: u128,
@@ -118,6 +119,7 @@ mod finance2 {
                 maintenance_haircut: u128::MAX,
                 mint_fee: 0,
                 borrow_fee: 0,
+                take_cash_fee: 0,
                 liquidation_reward: 0,
                 price: 1,
                 price_scaler: 1,
@@ -241,19 +243,22 @@ mod finance2 {
         pub fn mint(&mut self, to_wrap: u128) -> Result<(), LAssetError> {
             let caller = self.env().caller();
             let this = self.env().account_id();
-            let extra_liquidity = mulw(to_wrap, self.mint_fee).scale_up().checked_add(to_wrap).ok_or(LAssetError::MintFeeOverflow)?;
-            
-            transfer_from(self.underlying_token, caller, this, extra_liquidity).map_err(LAssetError::MintTransferFailed)?;
 
-            let (total_liquidity, updated_at, total_borrowable) = self.accrue();
+            let fee = mulw(to_wrap, self.mint_fee).scale_up();
+            let to_transfer = to_wrap.checked_add(fee).ok_or(LAssetError::MintFeeOverflow)?;
+            
+            transfer_from(self.underlying_token, caller, this, to_transfer).map_err(LAssetError::MintTransferFailed)?;
+
+            let total_borrowable = self.total_borrowable;
+            let (total_liquidity, updated_at) = self.inner_accrue(total_borrowable);
 
             let total_shares = self.total_shares;
             let shares = self.shares.get(caller).unwrap_or(0);
             
-            let new_total_liquidity = total_liquidity.checked_add(extra_liquidity).ok_or(LAssetError::MintOverflow)?;
-            let new_total_borrowable = add(total_borrowable, extra_liquidity); //PROVED
+            let new_total_liquidity = total_liquidity.checked_add(to_transfer).ok_or(LAssetError::MintOverflow)?;
+            let new_total_borrowable = add(total_borrowable, to_transfer); //PROVED
             
-            let to_mint = mulw(to_wrap, total_shares).div_rate(total_liquidity).unwrap_or(extra_liquidity); //PROVED
+            let to_mint = mulw(to_wrap, total_shares).div_rate(total_liquidity).unwrap_or(to_transfer); //PROVED
             let new_total_shares = add(total_shares, to_mint); //PROVED
             let new_shares = add(shares, to_mint); //PROVED
 
@@ -272,7 +277,8 @@ mod finance2 {
         pub fn burn(&mut self, to_burn: u128) -> Result<(), LAssetError> {
             let caller = self.env().caller();
 
-            let (total_liquidity, updated_at, total_borrowable) = self.accrue();
+            let total_borrowable = self.total_borrowable;
+            let (total_liquidity, updated_at) = self.inner_accrue(total_borrowable);
 
             let total_shares = self.total_shares;
             let shares = self.shares.get(caller).unwrap_or(0);
@@ -300,7 +306,8 @@ mod finance2 {
             let caller = self.env().caller();
             let this = self.env().account_id();
 
-            let (total_liquidity, updated_at, total_borrowable) = self.accrue();
+            let total_borrowable = self.total_borrowable;
+            let (total_liquidity, updated_at) = self.inner_accrue(total_borrowable);
 
             let bonds = if let Some(b) = self.bonds.get(caller) {
                 Ok(b)
@@ -312,11 +319,12 @@ mod finance2 {
                 Ok(0)
             }?;
 
-            let to_repay = mulw(to_borrow, self.borrow_fee).scale_up().checked_add(to_borrow).ok_or(LAssetError::BorrowFeeOverflow)?;
-            let new_total_borrowable = total_borrowable.checked_sub(to_repay).ok_or(LAssetError::BorrowOverflow)?;
+            let fee = mulw(to_borrow, self.borrow_fee).scale_up();
+            let to_return = to_borrow.checked_add(fee).ok_or(LAssetError::BorrowFeeOverflow)?;
+            let new_total_borrowable = total_borrowable.checked_sub(to_return).ok_or(LAssetError::BorrowOverflow)?;
             let total_debt = sub(total_liquidity, total_borrowable); //PROVED
             let total_bonds = self.total_bonds;
-            let to_mint = mulw(to_repay, total_bonds).ceil_rate(total_debt).unwrap_or(to_repay); //PROVED
+            let to_mint = mulw(to_return, total_bonds).ceil_rate(total_debt).unwrap_or(to_return); //PROVED
             let new_total_bonds = add(total_bonds, to_mint); //PROVED
             let new_bonds = add(bonds, to_mint); //PROVED
             
@@ -435,8 +443,10 @@ mod finance2 {
             cash: u128,
             bonds: u128,
         ) -> (u128, u128, u128, u128, u128) {
-            let (total_liquidity, updated_at, total_borrowable) = self.accrue();
+            let total_borrowable = self.total_borrowable;
+            let (total_liquidity, updated_at) = self.inner_accrue(total_borrowable);
             
+            let total_borrowable = self.total_borrowable;
             let total_debt = sub(total_liquidity, total_borrowable); //PROVED
             let total_bonds = self.total_bonds;
             let to_repay = mulw(cash, total_bonds).div_rate(total_debt).unwrap_or(0); //PROVED           
@@ -466,6 +476,15 @@ mod finance2 {
             (repaid, new_total_borrowable, new_total_bonds, new_bonds, total_liquidity)
         }
 
+        #[ink(message)]
+        pub fn accrue(&mut self) -> Result<(), LAssetError> {
+            let (total_liquidity, updated_at) = self.inner_accrue(self.total_borrowable);
+
+            self.last_total_liquidity = total_liquidity;
+            self.last_updated_at = updated_at;
+
+            Ok(())
+        }
 
         #[ink(message)]
         pub fn repay(&mut self, user: AccountId, extra_cash: u128) -> Result<(), LAssetError> {
@@ -482,11 +501,10 @@ mod finance2 {
             Ok(())
         }
 
-        pub fn accrue(&self) -> (u128, u64, u128) {
+        pub fn inner_accrue(&self, total_borrowable: u128) -> (u128, u64) {
             let now = self.env().block_timestamp();
             let updated_at = self.last_updated_at;
             let total_liquidity = self.last_total_liquidity;
-            let total_borrowable = self.total_borrowable;
             if now > updated_at {
                 let delta = sub(now as u128, updated_at as u128);
                 let standard_matured = self.standard_rate.saturating_mul(delta);
@@ -504,9 +522,9 @@ mod finance2 {
                 let interest = mulw(debt, interest_rate).scale_up();
     
                 let new_total_liquidity = total_liquidity.saturating_add(interest);
-                (new_total_liquidity, now, total_borrowable)    
+                (new_total_liquidity, now)    
             } else {
-                (total_liquidity, updated_at, total_borrowable)
+                (total_liquidity, updated_at)
             }
         }
     }
@@ -547,7 +565,8 @@ mod finance2 {
 
                 (self.next, qouted_repaid, 0, idv, 0, mdv)
             } else {
-                let (total_liquidity, updated_at, total_borrowable) = self.accrue();
+                let total_borrowable = self.total_borrowable;
+                let (total_liquidity, updated_at) = self.inner_accrue(total_borrowable);
 
                 self.last_total_liquidity = total_liquidity;
                 self.last_updated_at = updated_at;
@@ -575,7 +594,8 @@ mod finance2 {
 
         #[ink(message)]
         fn update(&mut self, user: AccountId) -> (AccountId, u128, u128) {
-            let (total_liquidity, updated_at, total_borrowable) = self.accrue();
+            let total_borrowable = self.total_borrowable;
+            let (total_liquidity, updated_at) = self.inner_accrue(total_borrowable);
 
             self.last_total_liquidity = total_liquidity;
             self.last_updated_at = updated_at;
@@ -601,14 +621,23 @@ mod finance2 {
 
     impl FlashLoanPool for LAssetContract {
         #[ink(message)]
-        fn take_cash(&mut self, amount: u128, target: AccountId) -> Result<AccountId, FlashLoanPoolError> {
+        fn take_cash(&mut self, amount: u128, target: AccountId) -> Result<(AccountId, u128), FlashLoanPoolError> {
             let caller = self.env().caller();
             require(caller == self.admin, FlashLoanPoolError::TakeCashUnauthorized)?;
             
+            let fee = mulw(amount, self.take_cash_fee).scale_up();
+            let new_total_liquidity = self.last_total_liquidity.checked_add(fee).ok_or(FlashLoanPoolError::TakeCashOverflow)?;
+            let new_total_borrowable = add(self.total_borrowable, fee); //PROVED
+
+            let to_return = amount.checked_add(fee).ok_or(FlashLoanPoolError::TakeCashFeeOverflow)?;
+            
+            self.last_total_liquidity = new_total_liquidity;
+            self.total_borrowable = new_total_borrowable;
+
             let underlying_token = self.underlying_token;
             transfer(underlying_token, target, amount).map_err(FlashLoanPoolError::TakeCashFailed)?;
 
-            Ok(underlying_token)
+            Ok((underlying_token, to_return))
         }
     }
 

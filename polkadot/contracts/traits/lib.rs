@@ -18,7 +18,7 @@ pub trait FlashLoanPool {
     /// Returns:
     /// - the address of the token that was borrowed
     #[ink(message)]
-    fn take_cash(&mut self, amount: u128, target: AccountId) -> Result<AccountId, FlashLoanPoolError>;
+    fn take_cash(&mut self, amount: u128, target: AccountId) -> Result<(AccountId, u128), FlashLoanPoolError>;
 }
 
 #[ink::trait_definition]
