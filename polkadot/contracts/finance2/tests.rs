@@ -1,4 +1,6 @@
 use ink::primitives::AccountId;
+use traits::FlashLoanPoolError;
+use traits::FlashLoanPool;
 
 use crate::finance2::*;
 use crate::errors::LAssetError;
@@ -14,7 +16,7 @@ fn setup_call(caller: AccountId, callee: AccountId, value: u128, timestamp: u64)
     ink::env::test::set_value_transferred::<ink::env::DefaultEnvironment>(value);
 }
 
-fn e<T: std::fmt::Debug>(m: &str, r: Result<T, LAssetError>) -> Result<(), String> {
+fn e<T: std::fmt::Debug>(m: &str, r: T) -> Result<(), String> {
     Err(format!("{}. Got: {:?}", m, r))
 }
 
@@ -331,6 +333,39 @@ fn default_works() {
         match usdc_app.liquidate(alice) {
             Err(LAssetError::LiquidateTooMuch) => Ok(()),
             r => e("Liquidate should fail if too much", r),
+        }.unwrap();
+    }
+    {
+        setup_call(alice, l_btc, 0, timestamp);
+        match btc_app.take_cash(0, alice) {
+            Err(FlashLoanPoolError::TakeCashUnauthorized) => Ok(()),
+            r => e("Take cash should fail if unauthorized", r),
+        }.unwrap();
+    }
+    {
+        btc_app.take_cash_fee = 1;
+        setup_call(admin, l_btc, 0, timestamp);
+        match btc_app.take_cash(u128::MAX, admin) {
+            Err(FlashLoanPoolError::TakeCashFeeOverflow) => Ok(()),
+            r => e("Take cash should fail on fee overflow", r),
+        }.unwrap();
+    }
+    {
+        btc_app.take_cash_fee = u128::MAX;
+        setup_call(admin, l_btc, 0, timestamp);
+        btc_app.take_cash(u128::MAX / 2, admin).unwrap();
+        match btc_app.take_cash(u128::MAX / 2, admin) {
+            Err(FlashLoanPoolError::TakeCashOverflow) => Ok(()),
+            r => e("Take cash should fail on overflow", r),
+        }.unwrap();
+    }
+    {
+        *transfer_error = true;
+        btc_app.take_cash_fee = 0;
+        setup_call(admin, l_btc, 0, timestamp);
+        match btc_app.take_cash(0, admin) {
+            Err(FlashLoanPoolError::TakeCashFailed(_)) => Ok(()),
+            r => e("Take cash should fail if transfer fails", r),
         }.unwrap();
     }
 }
