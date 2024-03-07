@@ -1,9 +1,9 @@
 use ink::primitives::AccountId;
-use traits::FlashLoanPoolError;
-use traits::FlashLoanPool;
 
-use crate::finance2::*;
+use crate::errors::TakeCashError;
+use crate::{finance2::*, AssetParams};
 use crate::errors::LAssetError;
+use crate::AssetPool;
 
 fn setup_call(caller: AccountId, callee: AccountId, value: u128, timestamp: u64) {
     unsafe {
@@ -49,6 +49,11 @@ fn default_works() {
         (&mut TRANSFER_ERROR, BALANCES.as_mut().unwrap(), L_BTC.as_mut().unwrap(), L_USDC.as_mut().unwrap(), L_ETH.as_mut().unwrap())
     };
     {
+        btc_app.price = 1;
+        usdc_app.price = 1;
+        eth_app.price = 1;
+    }
+    {
         setup_call(alice, l_btc, 0, timestamp);
         match btc_app.set_price(0, 0) {
             Err(LAssetError::SetPriceUnathorized) => Ok(()),
@@ -57,7 +62,21 @@ fn default_works() {
     }
     {
         setup_call(alice, l_eth, 0, timestamp);
-        match eth_app.set_params(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0) {
+        let params = AssetParams {
+            standard_rate: 0,
+            standard_min_rate: 0,
+            emergency_rate: 0,
+            emergency_max_rate: 0,
+            initial_margin: 0,
+            maintenance_margin: 0,
+            initial_haircut: u128::MAX,
+            maintenance_haircut: u128::MAX,
+            mint_fee: 0,
+            borrow_fee: 0,
+            take_cash_fee: 0,
+            liquidation_reward: 0,
+        };
+        match eth_app.set_params(params) {
             Err(LAssetError::SetParamsUnathorized) => Ok(()),
             r => e("Set params should fail if unauthorized", r),
         }.unwrap();
@@ -156,13 +175,13 @@ fn default_works() {
         }.unwrap();
     }
     {
-        btc_app.mint_fee = u128::MAX;
+        btc_app.params.mint_fee = u128::MAX;
         setup_call(alice, l_btc, 0, timestamp);
         match btc_app.mint(u128::MAX) {
             Err(LAssetError::MintFeeOverflow) => Ok(()),
             r => e("Mint should fail on fee overflow", r),
         }.unwrap();
-        btc_app.mint_fee = 0;
+        btc_app.params.mint_fee = 0;
     }
     {
         balances.insert((btc, alice), 3);
@@ -194,13 +213,13 @@ fn default_works() {
         }.unwrap();
     }
     {
-        btc_app.borrow_fee = u128::MAX;
+        btc_app.params.borrow_fee = u128::MAX;
         setup_call(alice, l_btc, 0, timestamp);
         match btc_app.borrow(u128::MAX) {
             Err(LAssetError::BorrowFeeOverflow) => Ok(()),
             r => e("Borrow should fail on fee overflow", r),
         }.unwrap();
-        btc_app.borrow_fee = 0;
+        btc_app.params.borrow_fee = 0;
     }
     {
         setup_call(alice, l_btc, 0, timestamp);
@@ -327,8 +346,8 @@ fn default_works() {
         usdc_app.price_scaler = 1;
     }
     {
-        eth_app.maintenance_margin = u128::MAX;
-        btc_app.maintenance_margin = u128::MAX;
+        eth_app.params.maintenance_margin = u128::MAX;
+        btc_app.params.maintenance_margin = u128::MAX;
         setup_call(alice, l_usdc, 0, timestamp);
         match usdc_app.liquidate(alice) {
             Err(LAssetError::LiquidateTooMuch) => Ok(()),
@@ -338,33 +357,25 @@ fn default_works() {
     {
         setup_call(alice, l_btc, 0, timestamp);
         match btc_app.take_cash(0, alice) {
-            Err(FlashLoanPoolError::TakeCashUnauthorized) => Ok(()),
+            Err(TakeCashError::Unauthorized) => Ok(()),
             r => e("Take cash should fail if unauthorized", r),
         }.unwrap();
     }
     {
-        btc_app.take_cash_fee = 1;
-        setup_call(admin, l_btc, 0, timestamp);
-        match btc_app.take_cash(u128::MAX, admin) {
-            Err(FlashLoanPoolError::TakeCashFeeOverflow) => Ok(()),
-            r => e("Take cash should fail on fee overflow", r),
-        }.unwrap();
-    }
-    {
-        btc_app.take_cash_fee = u128::MAX;
+        btc_app.params.take_cash_fee = u128::MAX;
         setup_call(admin, l_btc, 0, timestamp);
         btc_app.take_cash(u128::MAX / 2, admin).unwrap();
         match btc_app.take_cash(u128::MAX / 2, admin) {
-            Err(FlashLoanPoolError::TakeCashOverflow) => Ok(()),
+            Err(TakeCashError::Overflow) => Ok(()),
             r => e("Take cash should fail on overflow", r),
         }.unwrap();
     }
     {
         *transfer_error = true;
-        btc_app.take_cash_fee = 0;
+        btc_app.params.take_cash_fee = 0;
         setup_call(admin, l_btc, 0, timestamp);
         match btc_app.take_cash(0, admin) {
-            Err(FlashLoanPoolError::TakeCashFailed(_)) => Ok(()),
+            Err(TakeCashError::Transfer(_)) => Ok(()),
             r => e("Take cash should fail if transfer fails", r),
         }.unwrap();
     }

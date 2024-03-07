@@ -15,10 +15,10 @@ pub fn mulw(a: u128, b: u128) -> Wide {
     Wide(value)
 }
 pub fn add(a: u128, b: u128) -> u128 {
-    a.wrapping_add(b)
+    a.checked_add(b).unwrap()
 }
 pub fn sub(a: u128, b: u128) -> u128 {
-    a.wrapping_sub(b)
+    a.checked_sub(b).unwrap()
 }
 impl Wide {
     pub fn div_rate(&self, b: u128) -> Option<u128> {

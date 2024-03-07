@@ -46,3 +46,11 @@ pub enum LAssetError {
 
     SetParamsUnathorized,
 }
+
+#[derive(Debug)]
+#[ink::scale_derive(Encode, Decode, TypeInfo)]
+pub enum TakeCashError {
+    Unauthorized,
+    Overflow,
+    Transfer(PSP22Error),
+}
