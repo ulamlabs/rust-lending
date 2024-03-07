@@ -20,3 +20,4 @@ std = [
     "ink/std",
     "traits/std",
 ]
+ink-as-dependency = []

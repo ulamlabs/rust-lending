@@ -1,22 +1,51 @@
 #![cfg_attr(not(feature = "std"), no_std, no_main)]
 
-mod logic;
-mod errors;
+use errors::{LAssetError, TakeCashError};
+use ink::primitives::AccountId;
+
+pub mod logic;
+pub mod errors;
+
+pub use self::finance2::LAssetContractRef;
 
 #[ink::trait_definition]
 pub trait LAsset {
     #[ink(message)]
-    fn update(
-        &mut self, 
-        user: ink::primitives::AccountId
-    ) -> (ink::primitives::AccountId, u128, u128);
+    fn update(&mut self, user: AccountId) -> (AccountId, u128, u128);
 
     #[ink(message)]
-    fn repay_or_update(
-        &mut self, 
-        user: ink::primitives::AccountId, 
-        cash_owner: ink::primitives::AccountId
-    ) -> (ink::primitives::AccountId, u128, u128, u128, u128, u128);
+    fn repay_or_update(&mut self, user: AccountId, cash_owner: AccountId) -> (AccountId, u128, u128, u128, u128, u128);
+}
+
+#[ink::trait_definition]
+pub trait AssetPool {
+    #[ink(message)]
+    fn take_cash(&mut self, amount: u128, target: AccountId) -> Result<(AccountId, u128), TakeCashError>;
+    
+    #[ink(message)]
+    fn set_price(&mut self, price: u128, price_scaler: u128) -> Result<AccountId, LAssetError>;
+    
+    #[ink(message)]
+    fn set_params(&mut self, params: AssetParams) -> Result<AccountId, LAssetError>;
+}
+
+#[derive(Debug, Default)]
+#[ink::scale_derive(Encode, Decode, TypeInfo)]
+#[cfg_attr(feature = "std", derive(ink::storage::traits::StorageLayout))]
+
+pub struct AssetParams {
+    pub standard_rate: u128,
+    pub standard_min_rate: u128,
+    pub emergency_rate: u128,
+    pub emergency_max_rate: u128,
+    pub initial_margin: u128,
+    pub maintenance_margin: u128,
+    pub initial_haircut: u128,
+    pub maintenance_haircut: u128,
+    pub mint_fee: u128,
+    pub borrow_fee: u128,
+    pub take_cash_fee: u128,
+    pub liquidation_reward: u128,
 }
 
 #[ink::contract]
@@ -24,11 +53,12 @@ mod finance2 {
     use ink::prelude::vec::Vec;
     use ink::prelude::string::String;
     use ink::prelude::string::ToString;
-    use traits::errors::FlashLoanPoolError;
     use traits::psp22::{PSP22, PSP22Error, PSP22Metadata, Transfer, Approval};
-    use traits::FlashLoanPool;
+    use crate::errors::TakeCashError;
     use crate::logic::{require, add, mulw, sub};
     use crate::errors::LAssetError;
+    use crate::AssetParams;
+    use crate::AssetPool;
 
     use ink::storage::Mapping;
     use crate::LAsset;
@@ -54,22 +84,7 @@ mod finance2 {
         pub total_bonds: u128,
         pub bonds: Mapping<AccountId, u128>,
 
-        pub standard_rate: u128,
-        pub standard_min_rate: u128,
-
-        pub emergency_rate: u128,
-        pub emergency_max_rate: u128,
-
-        pub initial_margin: u128,
-        pub maintenance_margin: u128,
-
-        pub initial_haircut: u128,
-        pub maintenance_haircut: u128,
-
-        pub mint_fee: u128,
-        pub borrow_fee: u128,
-        pub take_cash_fee: u128,
-        pub liquidation_reward: u128,
+        pub params: AssetParams,
 
         pub price: u128,
         pub price_scaler: u128,
@@ -110,19 +125,21 @@ mod finance2 {
                 total_borrowable: 0,
                 total_bonds: 0,
                 bonds: Mapping::new(),
-                standard_rate: 0,
-                standard_min_rate: 0,
-                emergency_rate: 0,
-                emergency_max_rate: 0,
-                initial_margin: 0,
-                maintenance_margin: 0,
-                initial_haircut: u128::MAX,
-                maintenance_haircut: u128::MAX,
-                mint_fee: 0,
-                borrow_fee: 0,
-                take_cash_fee: 0,
-                liquidation_reward: 0,
-                price: 1,
+                params: AssetParams {
+                    standard_rate: 0,
+                    standard_min_rate: 0,
+                    emergency_rate: 0,
+                    emergency_max_rate: 0,
+                    initial_margin: 0,
+                    maintenance_margin: 0,
+                    initial_haircut: u128::MAX,
+                    maintenance_haircut: u128::MAX,
+                    mint_fee: 0,
+                    borrow_fee: 0,
+                    take_cash_fee: 0,
+                    liquidation_reward: 0,
+                },
+                price: 0,
                 price_scaler: 1,
                 cash: Mapping::new(),
                 whitelist: Mapping::new(),
@@ -131,49 +148,6 @@ mod finance2 {
                 decimals,
                 gas_collateral,
              }
-        }
-        #[allow(clippy::too_many_arguments)]
-        pub fn set_params(
-            &mut self,
-            standard_rate: u128,
-            standard_min_rate: u128,
-            emergency_rate: u128,
-            emergency_max_rate: u128,
-            initial_margin: u128,
-            maintenance_margin: u128,
-            initial_haircut: u128,
-            maintenance_haircut: u128,
-            mint_fee: u128,
-            borrow_fee: u128,
-            liquidation_reward: u128,
-        ) -> Result<(), LAssetError> {
-            let caller = self.env().caller();
-            require(caller == self.admin, LAssetError::SetParamsUnathorized)?;
-
-            self.standard_rate = standard_rate;
-            self.standard_min_rate = standard_min_rate;
-            self.emergency_rate = emergency_rate;
-            self.emergency_max_rate = emergency_max_rate;
-            self.initial_margin = initial_margin;
-            self.maintenance_margin = maintenance_margin;
-            self.initial_haircut = initial_haircut;
-            self.maintenance_haircut = maintenance_haircut;
-            self.mint_fee = mint_fee;
-            self.borrow_fee = borrow_fee;
-            self.liquidation_reward = liquidation_reward;
-
-            Ok(())
-        }
-
-        #[ink(message)]
-        pub fn set_price(&mut self, price: u128, price_scaler: u128) -> Result<(), LAssetError> {
-            let caller = self.env().caller();
-            require(caller == self.admin, LAssetError::SetPriceUnathorized)?;
-            
-            self.price = price;
-            self.price_scaler = price_scaler;
-
-            Ok(())
         }
 
         #[ink(message)]
@@ -209,7 +183,7 @@ mod finance2 {
             let new_total_collateral = sub(self.total_collateral, to_withdraw); //PROVED
 
             let mut total_icv = if let Some(qouted_collateral) = mulw(new_collateral, self.price).div(self.price_scaler) {
-                mulw(qouted_collateral, self.initial_haircut).scale()
+                mulw(qouted_collateral, self.params.initial_haircut).scale()
             } else {
                 u128::MAX
             };
@@ -245,7 +219,7 @@ mod finance2 {
             let caller = self.env().caller();
             let this = self.env().account_id();
 
-            let fee = mulw(to_wrap, self.mint_fee).scale_up();
+            let fee = mulw(to_wrap, self.params.mint_fee).scale_up();
             let to_transfer = to_wrap.checked_add(fee).ok_or(LAssetError::MintFeeOverflow)?;
             
             transfer_from(self.underlying_token, caller, this, to_transfer).map_err(LAssetError::MintTransferFailed)?;
@@ -320,7 +294,7 @@ mod finance2 {
                 Ok(0)
             }?;
 
-            let fee = mulw(to_borrow, self.borrow_fee).scale_up();
+            let fee = mulw(to_borrow, self.params.borrow_fee).scale_up();
             let to_return = to_borrow.checked_add(fee).ok_or(LAssetError::BorrowFeeOverflow)?;
             let new_total_borrowable = total_borrowable.checked_sub(to_return).ok_or(LAssetError::BorrowOverflow)?;
             let total_debt = sub(total_liquidity, total_borrowable); //PROVED
@@ -332,7 +306,7 @@ mod finance2 {
             let new_total_debt = sub(total_liquidity, new_total_borrowable); //PROVED
             let debt = mulw(new_bonds, new_total_debt).ceil_rate(new_total_bonds).unwrap_or(new_total_debt); //PROVED
             let quoted_debt = mulw(debt, self.price).ceil_up(self.price_scaler).unwrap_or(u128::MAX);
-            let mut total_idv = mulw(quoted_debt, self.initial_margin).scale_up().saturating_add(quoted_debt);
+            let mut total_idv = mulw(quoted_debt, self.params.initial_margin).scale_up().saturating_add(quoted_debt);
             let mut total_icv: u128 = 0;
 
             let mut current = self.next;
@@ -407,19 +381,19 @@ mod finance2 {
             let price = self.price;
             let price_scaler = self.price_scaler;
             let repaid_collateral = mulw(total_repaid, price_scaler).div(price).unwrap_or(u128::MAX);
-            let rewards = mulw(repaid_collateral, self.liquidation_reward).scale_up();
+            let rewards = mulw(repaid_collateral, self.params.liquidation_reward).scale_up();
             let to_take = repaid_collateral.saturating_add(rewards).min(collateral);
 
             let new_collateral = sub(collateral, to_take); //PROVED
             let new_total_collateral = sub(self.total_collateral, to_take); //PROVED
 
             total_icv = if let Some(qouted_collateral) = mulw(collateral, price).div(price_scaler) {
-                mulw(qouted_collateral, self.initial_haircut).scale().saturating_add(total_icv)
+                mulw(qouted_collateral, self.params.initial_haircut).scale().saturating_add(total_icv)
             } else {
                 u128::MAX
             };
             total_mcv = if let Some(qouted_new_collateral) = mulw(new_collateral, price).div(price_scaler) {
-                mulw(qouted_new_collateral, self.maintenance_haircut).scale().saturating_add(total_mcv)
+                mulw(qouted_new_collateral, self.params.maintenance_haircut).scale().saturating_add(total_mcv)
             } else {
                 u128::MAX
             };
@@ -508,16 +482,16 @@ mod finance2 {
             let total_liquidity = self.last_total_liquidity;
             if now > updated_at {
                 let delta = sub(now as u128, updated_at as u128);
-                let standard_matured = self.standard_rate.saturating_mul(delta);
-                let emergency_matured = self.emergency_rate.saturating_mul(delta);
+                let standard_matured = self.params.standard_rate.saturating_mul(delta);
+                let emergency_matured = self.params.emergency_rate.saturating_mul(delta);
     
                 let debt = sub(total_liquidity, total_borrowable);
     
                 let standard_scaled = mulw(standard_matured, debt).div_rate(total_liquidity).unwrap_or(0);
                 let emergency_scaled = mulw(emergency_matured, total_borrowable).div_rate(total_liquidity).unwrap_or(0);
     
-                let standard_final = standard_scaled.saturating_add(self.standard_min_rate);
-                let emergency_final = self.emergency_max_rate.saturating_sub(emergency_scaled);
+                let standard_final = standard_scaled.saturating_add(self.params.standard_min_rate);
+                let emergency_final = self.params.emergency_max_rate.saturating_sub(emergency_scaled);
     
                 let interest_rate = standard_final.max(emergency_final);
                 let interest = mulw(debt, interest_rate).scale_up();
@@ -527,7 +501,7 @@ mod finance2 {
             } else {
                 (total_liquidity, updated_at)
             }
-        }
+        }        
     }
 
     impl LAsset for LAssetContract {
@@ -558,88 +532,104 @@ mod finance2 {
                 let total_debt = sub(total_liquidity, new_borrowable); //PROVED
                 let debt = mulw(new_bonds, total_debt).ceil_up(new_total_bonds).unwrap_or(total_debt);
                 let qouted_debt = mulw(debt, price).ceil_up(price_scaler).unwrap_or(u128::MAX);
-                let mdv = mulw(qouted_debt, self.maintenance_margin).scale_up().saturating_add(qouted_debt);
+                let mdv = mulw(qouted_debt, self.params.maintenance_margin).scale_up().saturating_add(qouted_debt);
 
                 let old_debt = add(debt, repaid); //PROVED
                 let old_qouted_debt = mulw(old_debt, price).ceil_up(price_scaler).unwrap_or(u128::MAX);
-                let idv = mulw(old_qouted_debt, self.initial_margin).scale_up().saturating_add(old_qouted_debt);
+                let idv = mulw(old_qouted_debt, self.params.initial_margin).scale_up().saturating_add(old_qouted_debt);
 
                 (self.next, qouted_repaid, 0, idv, 0, mdv)
-            } else {
+            } else if let Some(c) = self.collateral.get(user) {
+                if let Some(qouted_collateral) = mulw(c, self.price).div(self.price_scaler) {
+                    let icv = mulw(qouted_collateral, self.params.initial_haircut).scale();
+                    let mcv = mulw(qouted_collateral, self.params.maintenance_haircut).scale();
+                    (self.next, 0, icv, 0, mcv, 0)
+                } else {
+                    (self.next, 0, u128::MAX, 0, u128::MAX, 0)
+                }
+            } else if let Some(b) = self.bonds.get(user) {
                 let total_borrowable = self.total_borrowable;
                 let (total_liquidity, updated_at) = self.inner_accrue(total_borrowable);
 
                 self.last_total_liquidity = total_liquidity;
                 self.last_updated_at = updated_at;
-                
-                if let Some(c) = self.collateral.get(user) {
-                    if let Some(qouted_collateral) = mulw(c, self.price).div(self.price_scaler) {
-                        let icv = mulw(qouted_collateral, self.initial_haircut).scale();
-                        let mcv = mulw(qouted_collateral, self.maintenance_haircut).scale();
-                        (self.next, 0, icv, 0, mcv, 0)
-                    } else {
-                        (self.next, 0, u128::MAX, 0, u128::MAX, 0)
-                    }
-                } else if let Some(b) = self.bonds.get(user) {
-                    let total_debt = sub(total_liquidity, total_borrowable); //PROVED
-                    let debt = mulw(b, total_debt).ceil_rate(self.total_bonds).unwrap_or(total_debt); //PROVED
-                    let qouted_debt = mulw(debt, self.price).ceil_up(self.price_scaler).unwrap_or(u128::MAX);
-                    let idv = mulw(qouted_debt, self.initial_margin).scale_up().saturating_add(qouted_debt);
-                    let mdv = mulw(qouted_debt, self.maintenance_margin).scale_up().saturating_add(qouted_debt);
-                    (self.next, 0, 0, idv, 0, mdv)
-                } else {
-                    (self.next, 0, 0, 0, 0, 0)
-                }
+
+                let total_debt = sub(total_liquidity, total_borrowable); //PROVED
+                let debt = mulw(b, total_debt).ceil_rate(self.total_bonds).unwrap_or(total_debt); //PROVED
+                let qouted_debt = mulw(debt, self.price).ceil_up(self.price_scaler).unwrap_or(u128::MAX);
+                let idv = mulw(qouted_debt, self.params.initial_margin).scale_up().saturating_add(qouted_debt);
+                let mdv = mulw(qouted_debt, self.params.maintenance_margin).scale_up().saturating_add(qouted_debt);
+                (self.next, 0, 0, idv, 0, mdv)
+            } else {
+                (self.next, 0, 0, 0, 0, 0)
             }
         }
 
         #[ink(message)]
         fn update(&mut self, user: AccountId) -> (AccountId, u128, u128) {
-            let total_borrowable = self.total_borrowable;
-            let (total_liquidity, updated_at) = self.inner_accrue(total_borrowable);
-
-            self.last_total_liquidity = total_liquidity;
-            self.last_updated_at = updated_at;
-
             if let Some(c) = self.collateral.get(user) {
                 if let Some(qouted_collateral) = mulw(c, self.price).div(self.price_scaler) {
-                    let icv = mulw(qouted_collateral, self.initial_haircut).scale();
+                    let icv = mulw(qouted_collateral, self.params.initial_haircut).scale();
                     (self.next, icv, 0)
                 } else {
                     (self.next, u128::MAX, 0)
                 }
             } else if let Some(b) = self.bonds.get(user) {
+                let total_borrowable = self.total_borrowable;
+                let (total_liquidity, updated_at) = self.inner_accrue(total_borrowable);
+
+                self.last_total_liquidity = total_liquidity;
+                self.last_updated_at = updated_at;
+
                 let total_debt = sub(total_liquidity, total_borrowable); //PROVED
                 let debt = mulw(b, total_debt).ceil_rate(self.total_bonds).unwrap_or(total_debt); //PROVED
                 let qouted_debt = mulw(debt, self.price).ceil_up(self.price_scaler).unwrap_or(u128::MAX);
-                let idv = mulw(qouted_debt, self.initial_margin).scale_up().saturating_add(qouted_debt);
+                let idv = mulw(qouted_debt, self.params.initial_margin).scale_up().saturating_add(qouted_debt);
                 (self.next, 0, idv)
             } else {
                 (self.next, 0, 0)
             }
         }
     }
-
-    impl FlashLoanPool for LAssetContract {
+    impl AssetPool for LAssetContract {
         #[ink(message)]
-        fn take_cash(&mut self, amount: u128, target: AccountId) -> Result<(AccountId, u128), FlashLoanPoolError> {
+        fn take_cash(&mut self, amount: u128, target: AccountId) -> Result<(AccountId, u128), TakeCashError> {
             let caller = self.env().caller();
-            require(caller == self.admin, FlashLoanPoolError::TakeCashUnauthorized)?;
+            require(caller == self.admin, TakeCashError::Unauthorized)?;
             
-            let fee = mulw(amount, self.take_cash_fee).scale_up();
-            let new_total_liquidity = self.last_total_liquidity.checked_add(fee).ok_or(FlashLoanPoolError::TakeCashOverflow)?;
+            let fee = mulw(amount, self.params.take_cash_fee).scale_up();
+            let new_total_liquidity = self.last_total_liquidity.checked_add(fee).ok_or(TakeCashError::Overflow)?;
             let new_total_borrowable = add(self.total_borrowable, fee); //PROVED
 
-            let to_return = amount.checked_add(fee).ok_or(FlashLoanPoolError::TakeCashFeeOverflow)?;
-            
             self.last_total_liquidity = new_total_liquidity;
             self.total_borrowable = new_total_borrowable;
 
             let underlying_token = self.underlying_token;
-            transfer(underlying_token, target, amount).map_err(FlashLoanPoolError::TakeCashFailed)?;
+            transfer(underlying_token, target, amount).map_err(TakeCashError::Transfer)?;
 
-            Ok((underlying_token, to_return))
+            Ok((underlying_token, fee))
         }
+        
+        #[ink(message)]
+        fn set_price(&mut self, price: u128, price_scaler: u128) -> Result<AccountId, LAssetError> {
+            let caller = self.env().caller();
+            require(caller == self.admin, LAssetError::SetPriceUnathorized)?;
+            
+            self.price = price;
+            self.price_scaler = price_scaler;
+            
+            Ok(self.next)
+        }
+        
+        #[ink(message)]
+        fn set_params(&mut self, params: AssetParams) -> Result<AccountId, LAssetError> {
+            let caller = self.env().caller();
+            require(caller == self.admin, LAssetError::SetParamsUnathorized)?;
+
+            self.params = params;
+            Ok(self.next)
+        }
+
     }
 
     impl PSP22 for LAssetContract {
@@ -754,13 +744,14 @@ mod finance2 {
     fn fetch_psp22_metadata(token: AccountId) -> (Option<String>, Option<String>, u8) {
         const DEFAULT_DECIMALS: u8 = 6;
         use ink::codegen::TraitCallBuilder;
+        use core::ops::Add;
         let token: ink::contract_ref!(PSP22Metadata) = token.into();
         let l_name = match token.call().token_name().try_invoke() {
-            Ok(Ok(Some(name))) => Some("L-".to_string() + name.as_str()),
+            Ok(Ok(Some(name))) => Some("L-".to_string().add(name.as_str())),
             _ => None,
         };
         let l_symbol = match token.call().token_symbol().try_invoke() {
-            Ok(Ok(Some(symbol))) => Some("L-".to_string() + symbol.as_str()),
+            Ok(Ok(Some(symbol))) => Some("L-".to_string().add(symbol.as_str())),
             _ => None,
         };
         let decimals = match token.call().token_decimals().try_invoke() {
