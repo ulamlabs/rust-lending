@@ -1,0 +1,21 @@
+[package]
+name = "traits"
+version = "0.1.0"
+authors = ["Luke <lukasz@ulam.io>"]
+edition = "2021"
+
+[dependencies]
+ink = { version = "5.0.0-rc.1", default-features = false }
+primitive-types = { version = "0.12.2", default-features = false, features = [
+    "codec",
+] }
+
+[lib]
+path = "lib.rs"
+
+[features]
+default = ["std"]
+std = [
+    "ink/std",
+]
+ink-as-dependency = []
