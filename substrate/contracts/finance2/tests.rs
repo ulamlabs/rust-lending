@@ -22,9 +22,9 @@ fn e<T: std::fmt::Debug>(m: &str, r: T) -> Result<(), String> {
 
 #[ink::test]
 fn default_works() {
-    let l_btc = AccountId::from([0x1; 32]);
-    let l_usdc = AccountId::from([0x2; 32]);
-    let l_eth = AccountId::from([0x3; 32]);
+    let l_btc = AccountId::from(BTC_ADDRESS);
+    let l_usdc = AccountId::from(USDC_ADDRESS);
+    let l_eth = AccountId::from(ETH_ADDRESS);
     let admin = AccountId::from([0x4; 32]);
     let btc = AccountId::from([0x5; 32]);
     let usdc = AccountId::from([0x6; 32]);
