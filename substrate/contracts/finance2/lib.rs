@@ -736,6 +736,12 @@ mod finance2 {
     pub static mut CALLEE: Option<AccountId> = None;
     #[cfg(test)]
     pub static mut TRANSFER_ERROR: bool = false;
+    #[cfg(test)]
+    pub const BTC_ADDRESS: [u8; 32] = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31];
+    #[cfg(test)]
+    pub const ETH_ADDRESS: [u8; 32] = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,0];
+    #[cfg(test)]
+    pub const USDC_ADDRESS: [u8; 32] = [2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,0,1];
 
     #[cfg(not(test))]
     fn update_next(next: &AccountId, user: &AccountId) -> UpdateResult {
@@ -748,14 +754,14 @@ mod finance2 {
         ink::env::test::set_caller::<ink::env::DefaultEnvironment>(unsafe { CALLEE.unwrap() });
         ink::env::test::set_callee::<ink::env::DefaultEnvironment>(*next);
         unsafe {
-            if *next == AccountId::from([0x3; 32]) {
+            if *next == AccountId::from(ETH_ADDRESS) {
                 L_ETH.as_mut().unwrap()
             }
-            else if *next == AccountId::from([0x2; 32]) {
-                L_USDC.as_mut().unwrap()
+            else if *next == AccountId::from(BTC_ADDRESS) {
+                L_BTC.as_mut().unwrap()
             }
             else {
-                L_BTC.as_mut().unwrap()
+                L_USDC.as_mut().unwrap()
             }
         }
     }

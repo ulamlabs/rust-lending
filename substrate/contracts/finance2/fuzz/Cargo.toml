@@ -1,5 +1,5 @@
 [package]
-name = "llama-finance-fuzz"
+name = "finance2-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2018"
@@ -8,14 +8,14 @@ edition = "2018"
 cargo-fuzz = true
 
 [dependencies]
-libfuzzer-sys = "0.4"
+libfuzzer-sys = { version = "0.4.0", features = ["arbitrary-derive"] }
 
-[dependencies.llama-finance]
+[dependencies.finance2]
 path = ".."
 
 [[bin]]
-name = "fuzz_target_1"
-path = "fuzz_targets/fuzz_target_1.rs"
+name = "panic_check"
+path = "fuzz_targets/panic_check.rs"
 test = false
 doc = false
 bench = false
