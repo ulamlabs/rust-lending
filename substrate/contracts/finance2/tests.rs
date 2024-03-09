@@ -1,10 +1,11 @@
-use ink::primitives::AccountId;
+pub use ink::primitives::AccountId;
 
-use crate::finance2::*;
-use crate::errors::{LAssetError, TakeCashError};
-use crate::structs::{AssetParams, AssetPool};
+pub use crate::finance2::{LAssetContract, BALANCES, BTC_ADDRESS, CALLER, CALLEE, ETH_ADDRESS, L_BTC, L_ETH, L_USDC, TRANSFER_ERROR, USDC_ADDRESS};
+pub use crate::errors::{LAssetError, TakeCashError};
+pub use crate::structs::{AssetParams, AssetPool, LAsset};
+pub use traits::psp22::PSP22;
 
-fn setup_call(caller: AccountId, callee: AccountId, value: u128, timestamp: u64) {
+pub fn setup_call(caller: AccountId, callee: AccountId, value: u128, timestamp: u64) {
     unsafe {
         CALLER = Some(caller);
         CALLEE = Some(callee);
