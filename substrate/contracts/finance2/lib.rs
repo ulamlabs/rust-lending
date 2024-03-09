@@ -378,15 +378,14 @@ mod finance2 {
             let total_borrowable = self.total_borrowable;
             let total_debt = sub(total_liquidity, total_borrowable); //PROVED
             let total_bonds = self.total_bonds;
-            let to_repay = mulw(cash, total_bonds).div_rate(total_debt).unwrap_or(0); //PROVED           
-            let to_compensate = to_repay.saturating_sub(bonds);
-            let to_burn = sub(to_repay, to_compensate); //PROVED
 
-            let new_cash = mulw(to_compensate, total_debt).div_rate(total_bonds).unwrap_or(cash); //PROVED
-            let new_bonds = sub(bonds, to_burn); //PROVED
-            let repaid = sub(cash, new_cash); //PROVED
+            let max_to_burn = mulw(cash, total_bonds).div_rate(total_debt).unwrap_or(0); //PROVED
+            let to_burn = max_to_burn.min(bonds); //PROVED
+            let repaid = mulw(to_burn, total_debt).ceil_rate(total_bonds).unwrap_or(0); //PROVED
+            let new_cash = sub(cash, repaid); //PROVED
 
             let new_total_borrowable = add(total_borrowable, repaid); //PROVED
+            let new_bonds = sub(bonds, to_burn); //PROVED
             let new_total_bonds = sub(total_bonds, to_burn); //PROVED
 
             self.cash.insert(caller, &new_cash);
@@ -430,7 +429,7 @@ mod finance2 {
             Ok(())
         }
 
-        pub fn inner_accrue(&self, total_borrowable: u128) -> (u128, u64) {
+        fn inner_accrue(&self, total_borrowable: u128) -> (u128, u64) {
             let now = self.env().block_timestamp();
             let updated_at = self.last_updated_at;
             let total_liquidity = self.last_total_liquidity;
@@ -694,7 +693,7 @@ mod finance2 {
         }
     } 
 
-    #[cfg(not(test))]
+    #[cfg(not(any(test, fuzzing)))]
     fn fetch_psp22_metadata(token: AccountId) -> (Option<String>, Option<String>, u8) {
         const DEFAULT_DECIMALS: u8 = 6;
         use ink::codegen::TraitCallBuilder;
@@ -716,40 +715,40 @@ mod finance2 {
         (l_name, l_symbol, decimals)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, fuzzing))]
     #[allow(unused_variables)]
     fn fetch_psp22_metadata(token: AccountId) -> (Option<String>, Option<String>, u8) {
         (Some("L-TestToken".to_string()), Some("L-TT".to_string()), 16)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, fuzzing))]
     pub static mut L_BTC: Option<LAssetContract> = None;
-    #[cfg(test)]
+    #[cfg(any(test, fuzzing))]
     pub static mut L_USDC: Option<LAssetContract> = None;
-    #[cfg(test)]
+    #[cfg(any(test, fuzzing))]
     pub static mut L_ETH: Option<LAssetContract> = None;
-    #[cfg(test)]
+    #[cfg(any(test, fuzzing))]
     pub static mut BALANCES: Option<std::collections::HashMap<(AccountId, AccountId), u128>> = None;
-    #[cfg(test)]
+    #[cfg(any(test, fuzzing))]
     pub static mut CALLER: Option<AccountId> = None;
-    #[cfg(test)]
+    #[cfg(any(test, fuzzing))]
     pub static mut CALLEE: Option<AccountId> = None;
-    #[cfg(test)]
+    #[cfg(any(test, fuzzing))]
     pub static mut TRANSFER_ERROR: bool = false;
-    #[cfg(test)]
+    #[cfg(any(test, fuzzing))]
     pub const BTC_ADDRESS: [u8; 32] = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31];
-    #[cfg(test)]
+    #[cfg(any(test, fuzzing))]
     pub const ETH_ADDRESS: [u8; 32] = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,0];
-    #[cfg(test)]
+    #[cfg(any(test, fuzzing))]
     pub const USDC_ADDRESS: [u8; 32] = [2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,0,1];
 
-    #[cfg(not(test))]
+    #[cfg(not(any(test, fuzzing)))]
     fn update_next(next: &AccountId, user: &AccountId) -> UpdateResult {
         let mut next: ink::contract_ref!(LAsset) = (*next).into();
         next.update(*user)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, fuzzing))]
     fn get_next(next: &AccountId) -> &mut LAssetContract {
         ink::env::test::set_caller::<ink::env::DefaultEnvironment>(unsafe { CALLEE.unwrap() });
         ink::env::test::set_callee::<ink::env::DefaultEnvironment>(*next);
@@ -766,41 +765,39 @@ mod finance2 {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, fuzzing))]
     fn restore_context() {
         ink::env::test::set_caller::<ink::env::DefaultEnvironment>(unsafe { CALLER.unwrap() });
         ink::env::test::set_callee::<ink::env::DefaultEnvironment>(unsafe { CALLEE.unwrap() });
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, fuzzing))]
     fn update_next(next: &AccountId, user: &AccountId) -> UpdateResult {
         let result = get_next(next).update(*user);
         restore_context();
         result
     }
 
-    #[cfg(not(test))]
+    #[cfg(not(any(test, fuzzing)))]
     fn repay_or_update(app: AccountId, user: AccountId, cash_owner: AccountId) -> (AccountId, u128, u128, u128, u128, u128) {
         let mut app: ink::contract_ref!(LAsset) = app.into();
         app.repay_or_update(user, cash_owner)
     }
-    #[cfg(test)]
+    #[cfg(any(test, fuzzing))]
     fn repay_or_update(app: AccountId, user: AccountId, cash_owner: AccountId) -> (AccountId, u128, u128, u128, u128, u128) {
         let result = get_next(&app).repay_or_update(user, cash_owner);
         restore_context();
         result
     }
 
-    #[cfg(not(test))]
+    #[cfg(not(any(test, fuzzing)))]
     fn transfer_from(token: AccountId, from: AccountId, to: AccountId, value: u128) -> Result<(), PSP22Error> {
         let mut token: ink::contract_ref!(PSP22) = token.into();
         token.transfer_from(from, to, value, Vec::default())
     }
-    #[cfg(test)]
-    #[allow(unused_variables)]
+    #[cfg(any(test, fuzzing))]
     fn transfer_from(token: AccountId, from: AccountId, to: AccountId, value: u128) -> Result<(), PSP22Error> {
         let balances = unsafe { BALANCES.as_mut().unwrap() };
-        let balance = balances.get(&(token, from)).unwrap_or(&0);
         let from_balance = balances.get(&(token, from)).unwrap_or(&0).checked_sub(value).ok_or(PSP22Error::InsufficientBalance)?;
         if from != to {
             let to_balance = balances.get(&(token, from)).unwrap_or(&0).saturating_add(value);
@@ -810,14 +807,13 @@ mod finance2 {
         Ok(())
     }
 
-    #[cfg(not(test))]
+    #[cfg(not(any(test, fuzzing)))]
     fn transfer(token: AccountId, to: AccountId, value: u128) -> Result<(), PSP22Error> {
         let mut token: ink::contract_ref!(PSP22) = token.into();
         token.transfer(to, value, Vec::default())
     }
     
-    #[cfg(test)]
-    #[allow(unused_variables)]
+    #[cfg(any(test, fuzzing))]
     fn transfer(token: AccountId, to: AccountId, value: u128) -> Result<(), PSP22Error> {
         unsafe {
             if TRANSFER_ERROR {
@@ -834,5 +830,5 @@ mod finance2 {
     }
 }
 
-#[cfg(test)]
-mod tests;
+#[cfg(any(test, fuzzing))]
+pub mod tests;

@@ -8,7 +8,9 @@ edition = "2018"
 cargo-fuzz = true
 
 [dependencies]
+arbitrary = { version = "1", features = ["derive"] }
 libfuzzer-sys = { version = "0.4.0", features = ["arbitrary-derive"] }
+ink = { version = "5.0.0-rc.1", default-features = false }
 
 [dependencies.finance2]
 path = ".."
