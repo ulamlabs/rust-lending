@@ -369,7 +369,6 @@ fn default_works() {
     }
     {
         *transfer_error = true;
-        l_btc.params.take_cash_fee = 0;
         setup_call(admin, btc, 0, timestamp);
         match l_btc.take_cash(0, admin) {
             Err(TakeCashError::Transfer(_)) => Ok(()),

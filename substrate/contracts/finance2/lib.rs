@@ -14,7 +14,7 @@ mod finance2 {
     use crate::errors::TakeCashError;
     use crate::logic::{require, add, mulw, sub};
     use crate::errors::LAssetError;
-    use crate::structs::{AssetParams, AssetPool, UpdateResult, LAsset};
+    use crate::structs::{AssetParams, AssetPool, LAsset, UpdateOrRepayResult, UpdateResult};
     use ink::storage::Mapping;
 
     #[ink(storage)]
@@ -318,16 +318,16 @@ mod finance2 {
             let mut total_mdv: u128 = 0;
             let mut total_repaid: u128 = 0;
 
-            let mut current = self.next;
-            while current != this {
-                let (next, repaid, icv, idv, mcv, mdv) = repay_or_update(current, user, caller);
+            let mut next = self.next;
+            while next != this {
+                let result = repay_or_update(next, user, caller);
                 
-                current = next;
-                total_repaid = repaid.saturating_add(repaid);
-                total_icv = total_icv.saturating_add(icv);
-                total_idv = total_idv.saturating_add(idv);
-                total_mcv = total_mcv.saturating_add(mcv);
-                total_mdv = total_mdv.saturating_add(mdv);
+                next = result.next;
+                total_repaid = total_repaid.saturating_add(result.qouted_repaid);
+                total_icv = total_icv.saturating_add(result.initial_collateral_value);
+                total_idv = total_idv.saturating_add(result.initial_debt_value);
+                total_mcv = total_mcv.saturating_add(result.maintenance_collateral_value);
+                total_mdv = total_mdv.saturating_add(result.maintenance_debt_value);
             }
 
             let collateral = self.collateral.get(user).ok_or(LAssetError::LiquidateForNothing)?;
@@ -459,7 +459,7 @@ mod finance2 {
 
     impl LAsset for LAssetContract {
         #[ink(message)]
-        fn repay_or_update(&mut self, user: AccountId, cash_owner: AccountId) -> (AccountId, u128, u128, u128, u128, u128) {
+        fn repay_or_update(&mut self, user: AccountId, cash_owner: AccountId) -> UpdateOrRepayResult {
             let caller = self.env().caller();
 
             let is_repay = if let Some(valid_caller) = self.whitelist.get(cash_owner) {
@@ -491,14 +491,14 @@ mod finance2 {
                 let old_qouted_debt = mulw(old_debt, price).ceil_up(price_scaler).unwrap_or(u128::MAX);
                 let idv = mulw(old_qouted_debt, self.params.initial_margin).scale_up().saturating_add(old_qouted_debt);
 
-                (self.next, qouted_repaid, 0, idv, 0, mdv)
+                UpdateOrRepayResult::from_repay(self.next, qouted_repaid, idv, mdv)
             } else if let Some(c) = self.collateral.get(user) {
                 if let Some(qouted_collateral) = mulw(c, self.price).div(self.price_scaler) {
                     let icv = mulw(qouted_collateral, self.params.initial_haircut).scale();
                     let mcv = mulw(qouted_collateral, self.params.maintenance_haircut).scale();
-                    (self.next, 0, icv, 0, mcv, 0)
+                    UpdateOrRepayResult::from_collateral(self.next, icv, mcv)
                 } else {
-                    (self.next, 0, u128::MAX, 0, u128::MAX, 0)
+                    UpdateOrRepayResult::from_collateral(self.next, u128::MAX, u128::MAX)
                 }
             } else if let Some(b) = self.bonds.get(user) {
                 let total_borrowable = self.total_borrowable;
@@ -512,9 +512,9 @@ mod finance2 {
                 let qouted_debt = mulw(debt, self.price).ceil_up(self.price_scaler).unwrap_or(u128::MAX);
                 let idv = mulw(qouted_debt, self.params.initial_margin).scale_up().saturating_add(qouted_debt);
                 let mdv = mulw(qouted_debt, self.params.maintenance_margin).scale_up().saturating_add(qouted_debt);
-                (self.next, 0, 0, idv, 0, mdv)
+                UpdateOrRepayResult::from_debt(self.next, idv, mdv)
             } else {
-                (self.next, 0, 0, 0, 0, 0)
+                UpdateOrRepayResult::new(self.next)
             }
         }
 
@@ -779,12 +779,12 @@ mod finance2 {
     }
 
     #[cfg(not(any(test, fuzzing)))]
-    fn repay_or_update(app: AccountId, user: AccountId, cash_owner: AccountId) -> (AccountId, u128, u128, u128, u128, u128) {
+    fn repay_or_update(app: AccountId, user: AccountId, cash_owner: AccountId) -> UpdateOrRepayResult {
         let mut app: ink::contract_ref!(LAsset) = app.into();
         app.repay_or_update(user, cash_owner)
     }
     #[cfg(any(test, fuzzing))]
-    fn repay_or_update(app: AccountId, user: AccountId, cash_owner: AccountId) -> (AccountId, u128, u128, u128, u128, u128) {
+    fn repay_or_update(app: AccountId, user: AccountId, cash_owner: AccountId) -> UpdateOrRepayResult {
         let result = get_next(&app).repay_or_update(user, cash_owner);
         restore_context();
         result

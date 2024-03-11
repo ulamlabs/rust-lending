@@ -19,7 +19,7 @@ pub trait FlashLoanReceiver {
 mod admin {
     use finance2::logic::require;
     use finance2::LAssetContractRef;
-    use finance2::structs::{AssetParams, AssetPool, LAsset, UpdateResult};
+    use finance2::structs::{AssetParams, AssetPool, LAsset, UpdateOrRepayResult, UpdateResult};
     use ink::contract_ref;
     use ink::prelude::vec::Vec;
     use ink::storage::Mapping;
@@ -130,8 +130,8 @@ mod admin {
         }
 
         #[ink(message)]
-        fn repay_or_update(&mut self, _user: AccountId, _cash_owner: AccountId) -> (AccountId, u128, u128, u128, u128, u128) {
-            (self.next, 0, 0, 0, 0, 0) // it is possible to block liquidate from here
+        fn repay_or_update(&mut self, _user: AccountId, _cash_owner: AccountId) -> UpdateOrRepayResult {
+            UpdateOrRepayResult::new(self.next) // it is possible to block liquidate from here
         }
     }
 }

@@ -33,13 +33,67 @@ impl UpdateResult {
     }
 }
 
+#[derive(Debug)]
+#[ink::scale_derive(Encode, Decode, TypeInfo)]
+pub struct UpdateOrRepayResult {
+    pub next: AccountId,
+    pub qouted_repaid: u128,
+    pub initial_collateral_value: u128,
+    pub initial_debt_value: u128,
+    pub maintenance_collateral_value: u128,
+    pub maintenance_debt_value: u128,
+}
+
+impl UpdateOrRepayResult {
+    pub fn new(next: AccountId) -> Self {
+        Self { 
+            next,
+            qouted_repaid: 0,
+            initial_collateral_value: 0, 
+            initial_debt_value: 0,
+            maintenance_collateral_value: 0,
+            maintenance_debt_value: 0,
+        }
+    }
+    pub fn from_collateral(next: AccountId, icv: u128, mcv: u128) -> Self {
+        Self { 
+            next,
+            qouted_repaid: 0,
+            initial_collateral_value: icv, 
+            initial_debt_value: 0,
+            maintenance_collateral_value: mcv,
+            maintenance_debt_value: 0,
+        }
+    }
+    pub fn from_debt(next: AccountId, idv: u128, mdv: u128) -> Self {
+        Self { 
+            next,
+            qouted_repaid: 0,
+            initial_collateral_value: 0, 
+            initial_debt_value: idv,
+            maintenance_collateral_value: 0,
+            maintenance_debt_value: mdv,
+        }
+    }
+    pub fn from_repay(next: AccountId, qouted_repaid: u128, idv: u128, mdv: u128) -> Self {
+        Self { 
+            next,
+            qouted_repaid,
+            initial_collateral_value: 0, 
+            initial_debt_value: idv,
+            maintenance_collateral_value: 0,
+            maintenance_debt_value: mdv,
+        }
+    }
+}
+
 #[ink::trait_definition]
 pub trait LAsset {
     #[ink(message)]
     fn update(&mut self, user: AccountId) -> UpdateResult;
 
     #[ink(message)]
-    fn repay_or_update(&mut self, user: AccountId, cash_owner: AccountId) -> (AccountId, u128, u128, u128, u128, u128);
+    fn repay_or_update(&mut self, user: AccountId, cash_owner: AccountId) -> UpdateOrRepayResult;
 }
 
 #[ink::trait_definition]
